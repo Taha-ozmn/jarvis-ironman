@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>J.A.R.V.I.S. — Stark OS</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --font-ui: 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif;
+      --font-hud: 'SF Mono', 'Menlo', 'Monaco', monospace;
+      --cyan: #00d4ff;
+      --cyan-dim: #0088cc;
+      --green: #00ff88;
+      --amber: #ffaa00;
+      --red: #ff3344;
+      --bg: #020810;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--cyan);
+      font-family: var(--font-ui);
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    body.desktop .scanlines { display: none; }
+    body.desktop .grid-bg { opacity: 0.6; }
+
+    .grid-bg {
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(0, 212, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 212, 255, 0.04) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+    }
+
+    .scanlines {
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg, transparent, transparent 2px,
+        rgba(0, 212, 255, 0.025) 2px, rgba(0, 212, 255, 0.025) 4px
+      );
+      pointer-events: none;
+      z-index: 50;
+    }
+
+    .boot-overlay {
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(ellipse at center, #0a1628 0%, #020810 80%);
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.8s ease, visibility 0.8s;
+    }
+    .boot-overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .boot-title {
+      font-family: var(--font-hud);
+      font-size: 2rem;
+      letter-spacing: 0.5em;
+      text-shadow: 0 0 30px var(--cyan);
+      margin-bottom: 0.5rem;
+    }
+    .boot-sub {
+      font-size: 0.7rem;
+      letter-spacing: 0.3em;
+      opacity: 0.5;
+      margin-bottom: 2rem;
+    }
+    .boot-line {
+      font-family: var(--font-hud);
+      font-size: 0.85rem;
+      letter-spacing: 0.15em;
+      color: #aaddff;
+      margin: 0.4rem 0;
+      min-width: 320px;
+      text-align: left;
+    }
+    .boot-bar {
+      width: 320px;
+      height: 3px;
+      background: rgba(0, 212, 255, 0.15);
+      margin-top: 1.5rem;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .boot-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--cyan-dim), var(--cyan));
+      box-shadow: 0 0 12px var(--cyan);
+      transition: width 0.4s ease;
+    }
+
+    .hud {
+      display: grid;
+      grid-template-columns: 220px 1fr 220px;
+      grid-template-rows: auto 1fr auto;
+      min-height: 100vh;
+      padding: 1rem;
+      gap: 1rem;
+      position: relative;
+      z-index: 10;
+    }
+
+    .top-bar {
+      grid-column: 1 / -1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 1rem;
+      border: 1px solid rgba(0, 212, 255, 0.2);
+      background: rgba(0, 20, 40, 0.5);
+    }
+    .stark {
+      font-family: var(--font-hud);
+      font-size: 0.65rem;
+      letter-spacing: 0.35em;
+      opacity: 0.45;
+    }
+    .top-center {
+      font-family: var(--font-hud);
+      font-size: 1.1rem;
+      letter-spacing: 0.4em;
+      text-shadow: 0 0 20px var(--cyan);
+    }
+    .top-status {
+      font-family: var(--font-hud);
+      font-size: 0.7rem;
+      letter-spacing: 0.2em;
+      color: var(--green);
+    }
+
+    .panel {
+      border: 1px solid rgba(0, 212, 255, 0.25);
+      background: rgba(0, 15, 30, 0.55);
+      padding: 1rem;
+      position: relative;
+    }
+    .panel::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0;
+      width: 24px; height: 24px;
+      border-top: 2px solid var(--cyan);
+      border-left: 2px solid var(--cyan);
+      opacity: 0.5;
+    }
+    .panel-title {
+      font-family: var(--font-hud);
+      font-size: 0.65rem;
+      letter-spacing: 0.25em;
+      opacity: 0.55;
+      margin-bottom: 0.8rem;
+      border-bottom: 1px solid rgba(0, 212, 255, 0.15);
+      padding-bottom: 0.4rem;
+    }
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      margin: 0.35rem 0;
+      color: #aaddff;
+    }
+    .stat-label { opacity: 0.6; font-size: 0.75rem; letter-spacing: 0.1em; }
+    .stat-val { font-family: var(--font-hud); font-size: 0.8rem; }
+    .stat-val.ok { color: var(--green); }
+
+    .center {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+
+    .reactor-wrap { position: relative; margin: 1rem 0; }
+
+    .reactor {
+      width: 180px;
+      height: 180px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #001a33 30%, #003366 60%, #001122 100%);
+      border: 3px solid var(--cyan);
+      box-shadow: 0 0 40px rgba(0, 212, 255, 0.3), inset 0 0 40px rgba(0, 136, 255, 0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      transition: all 0.4s ease;
+    }
+    .reactor.listening { border-color: var(--green); box-shadow: 0 0 60px rgba(0, 255, 136, 0.35); animation: pulse-g 1.5s infinite; }
+    .reactor.thinking { border-color: var(--amber); box-shadow: 0 0 60px rgba(255, 170, 0, 0.35); animation: spin 2s linear infinite; }
+    .reactor.speaking { border-color: var(--cyan); animation: pulse-b 0.7s infinite; }
+    .reactor.booting { border-color: var(--amber); animation: pulse-b 1.2s infinite; }
+    .reactor.error { border-color: var(--red); box-shadow: 0 0 50px rgba(255, 51, 68, 0.5); }
+
+    .reactor-core {
+      width: 54px; height: 54px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #fff 0%, var(--cyan) 50%, #0066aa 100%);
+      box-shadow: 0 0 25px var(--cyan);
+    }
+    .ring {
+      position: absolute;
+      border-radius: 50%;
+      border: 1px solid rgba(0, 212, 255, 0.3);
+    }
+    .ring-1 { width: 120px; height: 120px; animation: spin 8s linear infinite reverse; }
+    .ring-2 { width: 150px; height: 150px; animation: spin 14s linear infinite; }
+
+    .visualizer {
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 4px;
+      height: 32px;
+      margin-top: 1rem;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .visualizer.active { opacity: 1; }
+    .viz-bar {
+      width: 5px;
+      height: 8px;
+      background: var(--cyan);
+      border-radius: 2px;
+      animation: viz 0.5s ease-in-out infinite alternate;
+    }
+    .viz-bar:nth-child(2) { animation-delay: 0.1s; }
+    .viz-bar:nth-child(3) { animation-delay: 0.2s; }
+    .viz-bar:nth-child(4) { animation-delay: 0.15s; }
+    .viz-bar:nth-child(5) { animation-delay: 0.25s; }
+    .viz-bar:nth-child(6) { animation-delay: 0.05s; }
+    .viz-bar:nth-child(7) { animation-delay: 0.18s; }
+
+    .status-label {
+      font-family: var(--font-hud);
+      font-size: 0.85rem;
+      letter-spacing: 0.35em;
+      text-transform: uppercase;
+      opacity: 0.7;
+      margin-top: 0.5rem;
+    }
+    .status-detail {
+      margin-top: 0.6rem;
+      font-size: 1.05rem;
+      color: #aaddff;
+      text-align: center;
+      max-width: 480px;
+      line-height: 1.5;
+      min-height: 1.5rem;
+    }
+
+    .narration-feed {
+      margin-top: 1rem;
+      font-family: var(--font-hud);
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      color: var(--amber);
+      text-align: center;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .narration-feed.visible { opacity: 1; }
+
+    .listen-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 1rem;
+      padding: 0.45rem 1rem;
+      border: 1px solid rgba(0, 255, 136, 0.4);
+      border-radius: 999px;
+      background: rgba(0, 255, 136, 0.06);
+      color: var(--green);
+      font-family: var(--font-hud);
+      font-size: 0.65rem;
+      letter-spacing: 0.12em;
+    }
+    .listen-badge.busy {
+      border-color: rgba(255, 170, 0, 0.5);
+      color: var(--amber);
+    }
+    .listen-badge.muted {
+      border-color: rgba(255, 51, 68, 0.55);
+      color: var(--red);
+      background: rgba(255, 51, 68, 0.08);
+    }
+    .listen-badge.muted .listen-dot { animation: none; opacity: 0.5; }
+    .listen-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 8px currentColor;
+      animation: pulse-g 2s infinite;
+    }
+    .listen-badge.busy .listen-dot { animation: none; }
+
+    .bottom-bar {
+      grid-column: 1 / -1;
+      display: flex;
+      gap: 1rem;
+      align-items: stretch;
+    }
+    .chat-log {
+      flex: 1;
+      max-height: 140px;
+      overflow-y: auto;
+      font-size: 0.9rem;
+      padding: 0.5rem;
+    }
+    .chat-line { margin: 0.3rem 0; opacity: 0.9; }
+    .chat-line.you { color: #88ffcc; }
+    .chat-line.jarvis { color: #aaddff; }
+    .chat-line.narrate { color: var(--amber); font-size: 0.8rem; opacity: 0.85; }
+
+    .text-row {
+      display: flex;
+      gap: 0.5rem;
+      min-width: 280px;
+    }
+    .text-row input {
+      flex: 1;
+      background: rgba(0, 212, 255, 0.06);
+      border: 1px solid rgba(0, 212, 255, 0.3);
+      color: #aaddff;
+      padding: 0.6rem 0.8rem;
+      border-radius: 2px;
+      font-family: inherit;
+    }
+    .text-row button {
+      background: rgba(0, 212, 255, 0.12);
+      border: 1px solid var(--cyan);
+      color: var(--cyan);
+      padding: 0.6rem 1rem;
+      cursor: pointer;
+      font-family: var(--font-hud);
+      font-size: 0.65rem;
+      letter-spacing: 0.1em;
+    }
+    .text-row button.mic-toggle {
+      min-width: 108px;
+      border-color: var(--green);
+      color: var(--green);
+      background: rgba(0, 255, 136, 0.08);
+    }
+    .text-row button.mic-toggle.muted {
+      border-color: var(--red);
+      color: var(--red);
+      background: rgba(255, 51, 68, 0.1);
+    }
+
+    @keyframes pulse-g {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.04); opacity: 0.85; }
+    }
+    @keyframes pulse-b {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.03); }
+    }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    @keyframes viz {
+      from { height: 6px; opacity: 0.4; }
+      to { height: 28px; opacity: 1; }
+    }
+
+    @media (max-width: 900px) {
+      .hud { grid-template-columns: 1fr; }
+      .side-panel { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="grid-bg"></div>
+  <div class="scanlines"></div>
+
+  <div class="boot-overlay" id="boot-overlay">
+    <div class="boot-title">J.A.R.V.I.S.</div>
+    <div class="boot-sub">STARK INDUSTRIES · BOOT SEQUENCE</div>
+    <div class="boot-line" id="boot-line">Initializing…</div>
+    <div class="boot-bar"><div class="boot-bar-fill" id="boot-fill"></div></div>
+  </div>
+
+  <div class="hud">
+    <header class="top-bar">
+      <span class="stark">STARK INDUSTRIES</span>
+      <span class="top-center">J.A.R.V.I.S.</span>
+      <span class="top-status" id="systems-status">SYSTEMS NOMINAL</span>
+    </header>
+
+    <aside class="panel side-panel">
+      <div class="panel-title">TELEMETRY</div>
+      <div class="stat-row"><span class="stat-label">LOCAL TIME</span><span class="stat-val" id="tel-time">--:--:--</span></div>
+      <div class="stat-row"><span class="stat-label">DATE</span><span class="stat-val" id="tel-date">---</span></div>
+      <div class="stat-row"><span class="stat-label">CPU LOAD</span><span class="stat-val" id="tel-cpu">--</span></div>
+      <div class="stat-row"><span class="stat-label">MEMORY</span><span class="stat-val" id="tel-mem">--</span></div>
+      <div class="stat-row"><span class="stat-label">DISK</span><span class="stat-val" id="tel-disk">--</span></div>
+      <div class="stat-row"><span class="stat-label">MODEL</span><span class="stat-val" id="tel-model">--</span></div>
+      <div class="stat-row"><span class="stat-label">STATUS</span><span class="stat-val ok" id="tel-status">NOMINAL</span></div>
+    </aside>
+
+    <main class="center">
+      <div class="reactor-wrap">
+        <div class="reactor booting" id="reactor">
+          <div class="ring ring-1"></div>
+          <div class="ring ring-2"></div>
+          <div class="reactor-core"></div>
+        </div>
+      </div>
+      <div class="visualizer" id="visualizer">
+        <div class="viz-bar"></div><div class="viz-bar"></div><div class="viz-bar"></div>
+        <div class="viz-bar"></div><div class="viz-bar"></div><div class="viz-bar"></div>
+        <div class="viz-bar"></div>
+      </div>
+      <div class="status-label" id="status-label">INITIALIZING</div>
+      <div class="status-detail" id="status-detail">Connecting to Stark OS…</div>
+      <div class="narration-feed" id="narration-feed"></div>
+      <div class="listen-badge" id="listen-badge">
+        <span class="listen-dot"></span>
+        <span id="listen-label">VOICE INTERFACE ACTIVE</span>
+      </div>
+    </main>
+
+    <aside class="panel side-panel">
+      <div class="panel-title">SUBSYSTEMS</div>
+      <div class="stat-row"><span class="stat-label">NEURAL CORE</span><span class="stat-val ok" id="sub-neural">ONLINE</span></div>
+      <div class="stat-row"><span class="stat-label">VOICE SYNTH</span><span class="stat-val ok" id="sub-voice">RYAN NEURAL</span></div>
+      <div class="stat-row"><span class="stat-label">MAC OS</span><span class="stat-val ok" id="sub-macos">CONNECTED</span></div>
+      <div class="stat-row"><span class="stat-label">CURSOR BRIDGE</span><span class="stat-val ok" id="sub-cursor">OK</span></div>
+      <div class="stat-row"><span class="stat-label">MIC ARRAY</span><span class="stat-val ok" id="sub-mic">ACTIVE</span></div>
+      <div class="stat-row"><span class="stat-label">SANDBOX</span><span class="stat-val ok">DISABLED</span></div>
+    </aside>
+
+    <footer class="bottom-bar panel">
+      <div class="chat-log" id="chat-log"></div>
+      <div class="text-row">
+        <input id="text-input" placeholder="Command input…" />
+        <button type="button" class="mic-toggle" id="mic-toggle" title="Pause or resume microphone">MUTE MIC</button>
+        <button id="send-btn">EXEC</button>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    const reactor = document.getElementById('reactor');
+    const statusLabel = document.getElementById('status-label');
+    const statusDetail = document.getElementById('status-detail');
+    const chatLog = document.getElementById('chat-log');
+    const textInput = document.getElementById('text-input');
+    const sendBtn = document.getElementById('send-btn');
+    const micToggleBtn = document.getElementById('mic-toggle');
+    const listenBadge = document.getElementById('listen-badge');
+    const listenLabel = document.getElementById('listen-label');
+    const bootOverlay = document.getElementById('boot-overlay');
+    const bootLine = document.getElementById('boot-line');
+    const bootFill = document.getElementById('boot-fill');
+    const visualizer = document.getElementById('visualizer');
+    const narrationFeed = document.getElementById('narration-feed');
+    const systemsStatus = document.getElementById('systems-status');
+
+    const statusMap = {
+      booting: 'BOOT SEQUENCE',
+      idle: 'STANDBY',
+      listening: 'VOICE INPUT',
+      thinking: 'PROCESSING',
+      speaking: 'TRANSMITTING',
+      error: 'FAULT DETECTED',
+    };
+
+    let ws = null;
+    let recognition = null;
+    let processing = false;
+    let userMicPaused = false;
+    let recognitionBusy = false;
+    let bootComplete = false;
+    let desktopMode = false;
+    let nativeMic = false;
+    let lastSent = '';
+    let lastSentTime = 0;
+
+    const PAUSE_LISTEN_RE = /(?:beni\s+dinleme|art[iı]k\s+dinleme|dinleme\s+art[iı]k|dinlemeyi\s+(?:durdur|kapat)|mikrofonu?\s+kapat|stop\s+listening|don'?t\s+listen|do\s+not\s+listen|pause\s+listening|mute\s+mic|mic\s+off)/i;
+    const RESUME_LISTEN_RE = /(?:tekrar\s+dinle|yeniden\s+dinle|dinlemeye\s+ba[sş]la|mikrofonu?\s+a[cç]|start\s+listening|listen\s+again|resume\s+listening|listen\s+to\s+me|mic\s+on|beni\s+dinle(?!\w))/i;
+
+    const micConfig = {
+      require_wake_word: false,
+      min_confidence: 0.55,
+      pause_while_busy: true,
+      min_command_length: 3,
+    };
+
+    const WAKE_RE = /\b(hey\s+)?(ok\s+)?jarvis\b/i;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    function hasWakeWord(t) { return WAKE_RE.test(t); }
+    function stripWakeWord(text) {
+      let t = text.trim();
+      t = t.replace(/^(hey\s+)?(ok\s+)?jarvis[,\s:!]*/i, '').trim();
+      t = t.replace(/[,\s:!]*(hey\s+)?(ok\s+)?jarvis\.?$/i, '').trim();
+      return t;
+    }
+
+    function addChat(who, text) {
+      const line = document.createElement('div');
+      line.className = 'chat-line ' + who;
+      const prefix = who === 'you' ? 'YOU: ' : who === 'narrate' ? '▸ ' : 'JARVIS: ';
+      line.textContent = prefix + text;
+      chatLog.prepend(line);
+    }
+
+    function updateTelemetry(d) {
+      if (!d) return;
+      document.getElementById('tel-time').textContent = d.time || '--';
+      document.getElementById('tel-date').textContent = d.date || '--';
+      document.getElementById('tel-cpu').textContent = d.cpu || '--';
+      document.getElementById('tel-mem').textContent = d.memory || '--';
+      document.getElementById('tel-disk').textContent = d.disk || '--';
+      document.getElementById('tel-model').textContent = (d.model || '--').toUpperCase();
+      document.getElementById('tel-status').textContent = d.systems || 'NOMINAL';
+      systemsStatus.textContent = 'SYSTEMS ' + (d.systems || 'NOMINAL');
+      if (d.neural) document.getElementById('sub-neural').textContent = d.neural;
+      if (d.voice) document.getElementById('sub-voice').textContent = d.voice;
+      if (d.macos) document.getElementById('sub-macos').textContent = d.macos;
+      if (d.cursor) document.getElementById('sub-cursor').textContent = d.cursor;
+    }
+
+    function isPauseListenCommand(text) { return PAUSE_LISTEN_RE.test(text); }
+    function isResumeListenCommand(text) {
+      if (isPauseListenCommand(text)) return false;
+      return RESUME_LISTEN_RE.test(text);
+    }
+
+    function updateMicUI() {
+      const subMic = document.getElementById('sub-mic');
+      listenBadge.classList.toggle('muted', userMicPaused);
+      listenBadge.classList.toggle('busy', processing && !userMicPaused);
+      if (userMicPaused) {
+        listenLabel.textContent = 'MIC PAUSED — SAY "LISTEN AGAIN"';
+        subMic.textContent = 'STANDBY';
+        subMic.className = 'stat-val';
+        micToggleBtn.textContent = 'LISTEN';
+        micToggleBtn.classList.add('muted');
+        micToggleBtn.title = 'Resume microphone listening';
+      } else if (nativeMic) {
+        listenLabel.textContent = processing ? 'PROCESSING REQUEST' : 'NATIVE MIC ACTIVE';
+        subMic.textContent = 'ACTIVE';
+        subMic.className = 'stat-val ok';
+        micToggleBtn.textContent = 'MUTE MIC';
+        micToggleBtn.classList.remove('muted');
+        micToggleBtn.title = 'Pause microphone listening';
+      } else {
+        listenLabel.textContent = processing ? 'PROCESSING REQUEST' : 'VOICE INTERFACE ACTIVE';
+        subMic.textContent = 'ACTIVE';
+        subMic.className = 'stat-val ok';
+        micToggleBtn.textContent = 'MUTE MIC';
+        micToggleBtn.classList.remove('muted');
+        micToggleBtn.title = 'Pause microphone listening';
+      }
+    }
+
+    function setUserMicPaused(paused, { notifyServer = true } = {}) {
+      userMicPaused = paused;
+      updateMicUI();
+      if (paused) {
+        setStatus('idle', 'Mic paused — say "listen again" or press LISTEN');
+      } else if (!processing) {
+        setStatus('idle', 'Standing by — speak your command');
+      }
+      if (notifyServer && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'mic_control', enabled: !paused, silent: true }));
+      }
+    }
+
+    function stopRecognition() {
+      if (!recognition || recognitionBusy) return;
+      recognitionBusy = true;
+      try { recognition.stop(); } catch (_) {}
+    }
+
+    function startRecognitionIfAllowed() {
+      if (!recognition || processing || !bootComplete) return;
+      recognitionBusy = false;
+      try { recognition.start(); } catch (_) {
+        setTimeout(() => {
+          try { recognition.start(); } catch (_) {}
+        }, 400);
+      }
+    }
+
+    function sendCommand(text, fromVoice = false) {
+      const raw = (text || '').trim();
+      if (!raw || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+      if (fromVoice && userMicPaused) {
+        if (isResumeListenCommand(raw)) {
+          addChat('you', stripWakeWord(raw) || raw);
+          ws.send(JSON.stringify({ type: 'command', text: stripWakeWord(raw) || raw }));
+        }
+        return;
+      }
+
+      if (fromVoice && isPauseListenCommand(raw)) {
+        const command = stripWakeWord(raw) || raw;
+        setUserMicPaused(true, { notifyServer: false });
+        addChat('you', command);
+        ws.send(JSON.stringify({ type: 'command', text: command }));
+        return;
+      }
+
+      if (fromVoice && micConfig.require_wake_word && !hasWakeWord(raw)) return;
+      const command = stripWakeWord(raw);
+      if (!command || command.length < micConfig.min_command_length) return;
+      const now = Date.now();
+      if (command === lastSent && now - lastSentTime < 4000) return;
+      lastSent = command;
+      lastSentTime = now;
+      addChat('you', command);
+      if (micConfig.pause_while_busy) stopRecognition();
+      ws.send(JSON.stringify({ type: 'command', text: command }));
+    }
+
+    function setProcessing(active) {
+      processing = active;
+      updateMicUI();
+      visualizer.classList.toggle('active', active && !userMicPaused);
+      if (active && micConfig.pause_while_busy) stopRecognition();
+      else if (!active && !userMicPaused) startRecognitionIfAllowed();
+    }
+
+    function setStatus(status, detail) {
+      reactor.className = 'reactor ' + (status || 'idle');
+      statusLabel.textContent = statusMap[status] || (status || '').toUpperCase();
+      statusDetail.textContent = detail || '';
+      if (status === 'thinking' || status === 'speaking') setProcessing(true);
+      if (status === 'idle' || status === 'listening') setProcessing(false);
+      if (status === 'speaking') visualizer.classList.add('active');
+      if (status === 'idle' || status === 'listening') visualizer.classList.remove('active');
+    }
+
+    function startListening() {
+      startRecognitionIfAllowed();
+    }
+
+    let recognitionReady = false;
+    function setupRecognition() {
+      if (nativeMic) return;
+      if (recognitionReady) { startListening(); return; }
+      if (!SpeechRecognition) return;
+      recognition = new SpeechRecognition();
+      recognition.lang = micConfig.listen_language || 'tr-TR';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.onstart = () => {
+        recognitionBusy = false;
+        if (!processing && !userMicPaused) setStatus('listening', 'Listening, sir…');
+        else if (userMicPaused) setStatus('idle', 'Mic paused — say "listen again" or press LISTEN');
+      };
+      recognition.onend = () => {
+        recognitionBusy = false;
+        if (!processing) setTimeout(startListening, 300);
+      };
+      recognition.onerror = (e) => {
+        if (nativeMic) return;
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          document.getElementById('sub-mic').textContent = 'NATIVE ONLY';
+          return;
+        }
+        if (e.error === 'not-allowed') document.getElementById('sub-mic').textContent = 'DENIED';
+        if (e.error !== 'no-speech' && e.error !== 'aborted') setStatus('error', 'Mic: ' + e.error);
+      };
+      recognition.onresult = (event) => {
+        let interim = '', finalText = '', confidence = 1;
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const r = event.results[i];
+          if (r.isFinal) {
+            finalText += r[0].transcript;
+            if (r[0].confidence > 0) confidence = r[0].confidence;
+          } else interim += r[0].transcript;
+        }
+        if (userMicPaused) {
+          if (interim && isResumeListenCommand(interim)) {
+            setStatus('idle', interim);
+          }
+          if (finalText.trim() && confidence >= micConfig.min_confidence) {
+            sendCommand(finalText, true);
+          }
+          return;
+        }
+        if (processing && micConfig.pause_while_busy) return;
+        if (interim) setStatus('listening', interim);
+        if (!finalText.trim() || confidence < micConfig.min_confidence) return;
+        sendCommand(finalText, true);
+      };
+      recognitionReady = true;
+      if (bootComplete) startListening();
+    }
+
+    function finishBoot() {
+      bootComplete = true;
+      bootOverlay.classList.add('hidden');
+      if (!nativeMic) setupRecognition();
+      updateMicUI();
+      setStatus('idle', 'Standing by — speak your command');
+    }
+
+    function connect() {
+      ws = new WebSocket(`ws://${location.host}/ws`);
+      ws.onopen = () => setStatus('booting', 'Awaiting boot sequence…');
+      ws.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        if (data.type === 'config' && data.mic) {
+          Object.assign(micConfig, data.mic);
+          if (data.mic.listen_language && recognition) {
+            recognition.lang = data.mic.listen_language;
+          }
+          if (data.desktop) {
+            desktopMode = true;
+            document.body.classList.add('desktop');
+          }
+          if (data.native_mic) {
+            nativeMic = true;
+            document.body.classList.add('native-mic');
+            updateMicUI();
+          }
+        }
+        if (data.type === 'mic_state') setUserMicPaused(!data.enabled, { notifyServer: false });
+        if (data.type === 'telemetry') updateTelemetry(data.data);
+        if (data.type === 'boot') {
+          bootLine.textContent = data.line;
+          bootFill.style.width = (data.progress || 0) + '%';
+          setStatus('booting', data.line);
+          if (data.progress >= 100) setTimeout(finishBoot, 600);
+        }
+        if (data.type === 'narrate') {
+          narrationFeed.textContent = data.text;
+          narrationFeed.classList.add('visible');
+          addChat('narrate', data.text);
+        }
+        if (data.type === 'status' || data.status) setStatus(data.status, data.detail);
+        if (data.type === 'response') {
+          addChat('jarvis', data.response);
+          setStatus('speaking', data.response);
+          narrationFeed.classList.remove('visible');
+          const speakMs = Math.min(14000, Math.max(1200, data.response.length * 40));
+          setTimeout(() => {
+            setProcessing(false);
+            setStatus(
+              'idle',
+              userMicPaused
+                ? 'Mic paused — say "listen again" or press LISTEN'
+                : 'Standing by — speak your command',
+            );
+          }, speakMs);
+        }
+      };
+      ws.onclose = () => setTimeout(connect, 2000);
+    }
+
+    sendBtn.addEventListener('click', () => { sendCommand(textInput.value); textInput.value = ''; });
+    textInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { sendCommand(textInput.value); textInput.value = ''; }
+    });
+    micToggleBtn.addEventListener('click', () => {
+      if (userMicPaused) {
+        sendCommand('beni dinle');
+      } else {
+        setUserMicPaused(true, { notifyServer: false });
+        sendCommand('beni dinleme');
+      }
+    });
+
+    updateMicUI();
+
+    connect();
+    setTimeout(() => { if (!bootComplete) finishBoot(); }, 15000);
+  </script>
+</body>
+</html>

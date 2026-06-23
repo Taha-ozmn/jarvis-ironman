@@ -1,0 +1,12 @@
+.venv/
+.env
+.env.save
+.DS_Store
+__pycache__/
+*.pyc
+voice/macos_listen
+*.mp3
+workspace/*
+!workspace/.gitkeep
+mobile-app/
+yazma-app/

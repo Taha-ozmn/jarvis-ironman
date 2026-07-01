@@ -16,6 +16,10 @@ class JarvisNarrator:
         "At your service, sir.",
         "Immediately, sir.",
         "As you wish, sir.",
+        "One moment, sir.",
+        "Certainly, sir.",
+        "Understood, sir.",
+        "Allow me a moment, sir.",
     )
 
     WORK_UPDATES = (
@@ -31,23 +35,6 @@ class JarvisNarrator:
         "Continuing work — won't be long, sir.",
     )
 
-    CONTEXT_ACKS: dict[str, tuple[str, ...]] = {
-        "youtube": ("Opening YouTube for you, sir.", "Right away — YouTube, sir."),
-        "spotify": ("Spotify, sir — on it.", "Opening Spotify now, sir."),
-        "open": ("Opening that now, sir.", "Launching it, sir."),
-        "search": ("Searching now, sir.", "Looking that up, sir."),
-        "ara": ("Searching, sir.", "On the hunt, sir."),
-        "shell": ("Running that command, sir.", "Executing now, sir."),
-        "time": ("Checking the time, sir.",),
-        "weather": ("Checking weather, sir.",),
-        "code": ("Looking at the code, sir.", "Analyzing that, sir."),
-        "file": ("Accessing files, sir.", "On the files, sir."),
-        "mobil": ("Building the mobile app, sir.", "Scaffolding your app now, sir."),
-        "mobile": ("Building the mobile app, sir.", "On the application, sir."),
-        "uygulama": ("Creating the application, sir.", "Building that app now, sir."),
-        "proje": ("Starting the project, sir.", "Full project build initiated, sir."),
-    }
-
     BOOT_LINES = (
         "Boot sequence initiated.",
         "Loading neural core.",
@@ -57,12 +44,7 @@ class JarvisNarrator:
     )
 
     def instant_ack(self, command: str) -> str:
-        lower = command.lower()
-        for key, phrases in self.CONTEXT_ACKS.items():
-            if key in lower:
-                return random.choice(phrases)
-        if any(w in lower for w in ("aç", "open", "launch", "başlat")):
-            return random.choice(self.CONTEXT_ACKS["open"])
+        """Brief acknowledgement while the AI processes — no keyword assumptions."""
         return random.choice(self.GENERIC_ACKS)
 
     def work_update(self, index: int = 0) -> str:
@@ -72,10 +54,16 @@ class JarvisNarrator:
         return self.BOOT_LINES[index % len(self.BOOT_LINES)]
 
     @staticmethod
-    def time_greeting() -> str:
+    def time_greeting(language: str = "en") -> str:
         import datetime
 
         hour = datetime.datetime.now().hour
+        if str(language).lower().startswith("tr"):
+            if hour < 12:
+                return "Günaydın, efendim."
+            if hour < 18:
+                return "İyi günler, efendim."
+            return "İyi akşamlar, efendim."
         if hour < 12:
             return "Good morning, sir."
         if hour < 18:

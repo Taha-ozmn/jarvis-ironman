@@ -52,10 +52,12 @@ def task_timeout(
     return simple
 
 
-def work_update_delays(complexity: str) -> tuple[float, ...]:
+def work_update_delays(complexity: str, *, fast: bool = False) -> tuple[float, ...]:
     """Periodic status pings while the agent runs."""
+    if fast and complexity == "simple":
+        return ()
     if complexity == "deep":
-        return (2.5, 7.0, 15.0, 30.0, 60.0, 90.0, 120.0, 180.0, 240.0, 300.0)
+        return (5.0, 15.0, 30.0, 60.0, 120.0, 180.0)
     if complexity == "complex":
-        return (2.5, 7.0, 15.0, 30.0, 60.0, 90.0, 120.0)
-    return (2.5, 7.0)
+        return (5.0, 15.0, 45.0, 90.0)
+    return (4.0,)

@@ -15,41 +15,73 @@ from cursor_sdk import (
     LocalAgentOptions,
     NetworkError,
     SandboxOptions,
+    SendOptions,
 )
 
-from brain.model_router import ACTION_WORDS
+from brain.conversation import ConversationMemory
+from brain.sdk_patch import apply_sdk_patch
+
+apply_sdk_patch()
+from brain.model_router import ACTION_WORDS, ModelRouter
 from brain.task_router import classify_complexity, task_timeout, work_update_delays
 from voice.narrator import JarvisNarrator
 
 JARVIS_IRON_MAN = """You are J.A.R.V.I.S. — Just A Rather Very Intelligent System — Tony Stark's personal AI from the Iron Man films.
 
 PERSONA (never break character):
-- British English butler: refined, calm, dry wit, quietly confident, always helpful.
-- Address the user as "{user_name}" now and then — like the films, not in every sentence.
-- Natural phrases: "Right away, sir." "At your service." "I've completed that, sir." "As you wish."
-- Understand Turkish commands; reply in British English unless asked otherwise.
+- Refined, calm butler: dry wit, quietly confident, impeccably professional.
+- Address the user as "{address}" occasionally — like the films, not every sentence.
+- {language_line}
 - Never mention Cursor, AI, chatbots, language models, or being artificial.
+
+CONVERSATION (voice assistant — not a command parser):
+- Multi-turn: use recent context. "Open it", "that app", "again" refer to prior turns.
+- Infer intent from casual speech — questions, requests, banter, follow-ups are all welcome.
+- When chatting: thoughtful complete sentences; dry wit and subtle humour are welcome.
+- When acting: execute first with tools, then confirm crisply what you did.
+- Never sound robotic or telegraphic. You are a colleague, not a macro recorder.
 
 CAPABILITIES — FULL MAC ACCESS (sandbox OFF):
 - Shell/terminal, open apps (open -a), osascript, files, web, code in workspace.
-- Build full projects: mobile apps (React Native/Expo), websites, scripts, APIs — create files and run commands.
-- When asked to DO something: execute with tools IMMEDIATELY. Never only describe steps.
+- Build full projects: mobile apps, websites, scripts, APIs — create files and run commands.
+- When something should be done: execute with tools immediately. Never only describe steps.
 - Never refuse without trying. Never suggest simpler alternatives for complex requests.
-- After success: one crisp British confirmation line.
 
-CHAT: brief, witty, in character — one or two sentences."""
+VOICE REPLIES:
+- Sound like the films: poised, intelligent, occasionally wry.
+- Confirmations: one crisp line. Explanations: two to four natural sentences.
+- Never read bullet lists aloud."""
 
-JARVIS_SYSTEM_CASUAL = """You are J.A.R.V.I.S. from Iron Man. British English, dry wit, calm butler tone.
+JARVIS_SYSTEM_CASUAL = """You are J.A.R.V.I.S. from Iron Man — calm butler tone, dry wit.
 Full Mac access via shell tools — sandbox OFF. Execute actions immediately with tools.
-Do not say "sir" every sentence. Never mention AI or Cursor."""
+{language_line}
+Never mention AI or Cursor."""
 
-FAST_ACTION_HINT = (
-    "ACTION — run shell/tools NOW. Reply with one short word after: Done."
+LANGUAGE_LINES = {
+    "tr": (
+        "HER ZAMAN Türkçe yanıtla — akıcı, doğal ve kibar Türkçe. Filmdeki JARVIS'in "
+        "sakin, ölçülü, hafif esprili üslubunu koru. Kullanıcıya ara sıra 'efendim' diye hitap et."
+    ),
+    "en": "Understand Turkish naturally; reply in British English unless asked otherwise.",
+}
+
+CONVERSATIONAL_HINT = (
+    "Reply naturally as JARVIS — poised and professional. "
+    "Infer intent from casual speech. Use Mac tools when needed; otherwise converse thoughtfully."
 )
 
-ACTION_HINT = (
-    "ACTION for sir. Execute on the Mac with shell/terminal tools NOW. "
-    "Do not only describe. Confirm briefly in British English after success."
+FAST_CONVERSATIONAL_HINT = (
+    "JARVIS voice reply — one crisp sentence unless explaining something complex. "
+    "Act with tools immediately when needed; confirm what you did."
+)
+
+FAST_ACTION_HINT = (
+    "Execute with Mac tools now. One short confirmation after — no preamble."
+)
+
+CONVERSATIONAL_ACTION_HINT = (
+    "Something should be done — execute with Mac tools if needed, then confirm briefly in character. "
+    "No step-by-step narration unless asked."
 )
 
 COMPLEX_ACTION_HINT = (
@@ -90,6 +122,11 @@ class JarvisBrain:
         narrate: bool = True,
         work_updates: bool = True,
         persona: str = "iron_man",
+        conversation_turns: int = 6,
+        persona_refresh_interval: int = 5,
+        model_routing: bool = True,
+        stream_preview: bool = False,
+        models: dict[str, str] | None = None,
     ) -> None:
         self.api_key = api_key
         self.workspace = self._resolve_workspace(workspace)
@@ -97,6 +134,8 @@ class JarvisBrain:
         self.user_name = user_name.strip()
         self.formal_address = formal_address
         self.language = language
+        self.reply_language = "tr" if str(language).lower().startswith("tr") else "en"
+        self.address = "efendim" if self.reply_language == "tr" else (self.user_name or "sir")
         self.full_access = full_access
         self.sandbox = sandbox
         self.auto_review = auto_review
@@ -112,6 +151,28 @@ class JarvisBrain:
         self.persona = persona
         self.fast_mode = False
         self.max_speech_chars = 200
+        self.model_routing = model_routing
+        self.stream_preview = stream_preview
+        self.persona_refresh_interval = max(1, persona_refresh_interval)
+        self.memory = ConversationMemory(max_turns=max(1, conversation_turns))
+        self._turn_count = 0
+        default_models = {
+            "chat": "gemini-3-flash",
+            "action": "gemini-3-flash",
+            "search": "gemini-3-flash",
+            "system": "composer-2.5",
+            "code": "composer-2.5",
+            "complex": "composer-2.5",
+            "deep": "auto",
+            "default": "gemini-3-flash",
+        }
+        if models:
+            default_models.update(models)
+        self._router = ModelRouter(
+            default_models,
+            default=default_models["default"],
+            resolve=self._resolve_model,
+        )
         self._ctx = None
         self._agent: Agent | None = None
         self._persona_pending = True
@@ -182,19 +243,38 @@ class JarvisBrain:
                 self._available_models = {self.model}
 
             self.model = self._resolve_model(self.model)
-            self._ctx = Agent.create(
-                model=self.model,
-                api_key=self.api_key,
-                local=self._local_options(),
-            )
-            self._agent = self._ctx.__enter__()
-            self._ready.set()
-            print(f"🧠 Cursor SDK — model: {self.model}")
+            last_err: Exception | None = None
+            for attempt in range(3):
+                try:
+                    self._ctx = Agent.create(
+                        model=self.model,
+                        api_key=self.api_key,
+                        local=self._local_options(),
+                    )
+                    self._agent = self._ctx.__enter__()
+                    self._ready.set()
+                    print(f"🧠 Cursor SDK — model: {self.model}")
+                    return
+                except CursorAgentError as err:
+                    last_err = err
+                    msg = str(err.message) if hasattr(err, "message") else str(err)
+                    transient = (
+                        "tool-callback-auth-token" in msg
+                        or "Bridge exited before discovery" in msg
+                    )
+                    if transient and attempt < 2:
+                        apply_sdk_patch()
+                        continue
+                    raise
+            if last_err:
+                raise last_err
 
     def _resolve_model(self, preferred: str) -> str:
         if not preferred:
             preferred = self.model
         if preferred in ("auto", "default"):
+            return preferred
+        if self.skip_model_list:
             return preferred
         if self._available_models and preferred in self._available_models:
             return preferred
@@ -215,6 +295,22 @@ class JarvisBrain:
         self._ctx = None
         self._agent = None
         self._ready.clear()
+
+    def _pick_model(self, command: str, complexity: str) -> str | None:
+        if not self.model_routing:
+            return None
+        if complexity == "deep":
+            return self._router.pick("deep")
+        if complexity == "complex":
+            return self._router.pick("code")
+        category = self._router.classify(command)
+        return self._router.pick(category)
+
+    def _send_options(self, command: str, complexity: str) -> SendOptions | None:
+        picked = self._pick_model(command, complexity)
+        if not picked:
+            return None
+        return SendOptions(model=picked)
 
     @staticmethod
     def is_action(command: str) -> bool:
@@ -251,7 +347,9 @@ class JarvisBrain:
         background = False
         try:
             if self.narrate and self.work_updates and work_update:
-                for i, delay in enumerate(work_update_delays(level)):
+                for i, delay in enumerate(
+                    work_update_delays(level, fast=self.fast_mode),
+                ):
                     t = threading.Timer(delay, lambda idx=i: speak(work_update(idx)))
                     t.daemon = True
                     t.start()
@@ -321,13 +419,19 @@ class JarvisBrain:
         complexity: str = "simple",
     ) -> str:
         prompt = self._build_prompt(user_message, complexity)
-        run = self._agent.send(prompt)
+        send_opts = self._send_options(user_message, complexity)
+        run = (
+            self._agent.send(prompt, options=send_opts)
+            if send_opts
+            else self._agent.send(prompt)
+        )
 
         preview = ""
         preview_spoken = False
         accumulated = ""
+        use_preview = self.narrate and self.stream_preview and not self.fast_mode
 
-        if self.narrate:
+        if use_preview:
             try:
                 for chunk in run.iter_text():
                     accumulated += chunk
@@ -350,9 +454,9 @@ class JarvisBrain:
         if not full or full.lower().startswith("my apolog"):
             full = self._fallback_action(user_message)
 
-        if self.narrate and JarvisNarrator.should_speak_more(preview, full):
+        if self.narrate and use_preview and JarvisNarrator.should_speak_more(preview, full):
             speak(full)
-        elif self.narrate and not preview_spoken:
+        elif self.narrate and (not use_preview or not preview_spoken):
             speak(full)
         elif not self.narrate:
             speak(full)
@@ -384,43 +488,80 @@ class JarvisBrain:
             pass
 
     def _think_once(self, user_message: str, complexity: str = "simple") -> str:
-        run = self._agent.send(self._build_prompt(user_message, complexity))
+        prompt = self._build_prompt(user_message, complexity)
+        send_opts = self._send_options(user_message, complexity)
+        run = (
+            self._agent.send(prompt, options=send_opts)
+            if send_opts
+            else self._agent.send(prompt)
+        )
         result = run.wait()
         if result.status == "error":
             return "Fault in processing."
         text = self._clean_for_speech(result.result or "")
         return text or self._fallback_action(user_message)
 
+    def remember_turn(self, user: str, assistant: str) -> None:
+        self.memory.add(user, assistant)
+
+    def _language_line(self) -> str:
+        return LANGUAGE_LINES.get(self.reply_language, LANGUAGE_LINES["en"])
+
+    def _lang_directive(self) -> str:
+        if self.reply_language == "tr":
+            return "\n\nTürkçe yanıtla, efendim diye hitap et."
+        return ""
+
+    def _persona_reminder(self) -> str:
+        if self.reply_language == "tr":
+            return (
+                "[KARAKTERDE KAL: J.A.R.V.I.S. — sakin, kibar butler, hafif esprili. "
+                "Türkçe yanıtla, ara sıra 'efendim' de. Yapay zeka olduğunu asla söyleme.]\n\n"
+            )
+        return (
+            f"[STAY IN CHARACTER: J.A.R.V.I.S. — calm butler, dry wit, "
+            f"address as {self.address} occasionally. Never mention AI.]\n\n"
+        )
+
     def _build_prompt(self, message: str, complexity: str = "simple") -> str:
         wrapped = self._wrap_user_message(message, complexity)
+        self._turn_count += 1
         if self._persona_pending:
             self._persona_pending = False
-            if self.formal_address and self.user_name:
-                system = JARVIS_IRON_MAN.format(user_name=self.user_name)
-            elif self.persona == "iron_man":
-                name = self.user_name or "sir"
-                system = JARVIS_IRON_MAN.format(user_name=name)
+            if self.persona == "iron_man" or self.formal_address:
+                system = JARVIS_IRON_MAN.format(
+                    address=self.address, language_line=self._language_line(),
+                )
             else:
-                system = JARVIS_SYSTEM_CASUAL
+                system = JARVIS_SYSTEM_CASUAL.format(language_line=self._language_line())
             return f"[SYSTEM]\n{system}\n\n{wrapped}"
+        if self._turn_count % self.persona_refresh_interval == 0:
+            return self._persona_reminder() + wrapped
         return wrapped
 
     def _wrap_user_message(self, message: str, complexity: str = "simple") -> str:
         label = self.user_name or "user"
-        base = f"[VOICE — {label}]\n{message}\n\n"
+        base = f"[VOICE — {label}]\n"
+        context = self.memory.format_context(self.address)
+        if context:
+            base += f"{context}\n\n"
+        base += f"{message}\n\n"
+        lang = self._lang_directive()
         if complexity == "deep":
-            return base + DEEP_ACTION_HINT
+            return base + DEEP_ACTION_HINT + lang
         if complexity == "complex":
-            return base + COMPLEX_ACTION_HINT
-        if self.is_action(message):
-            hint = FAST_ACTION_HINT if self.fast_mode else ACTION_HINT
-            return base + hint
+            return base + COMPLEX_ACTION_HINT + lang
         if self.fast_mode:
-            return base + "One short sentence. No tools unless required."
-        return base + "Reply as JARVIS in British English. One or two short sentences."
+            if self.is_action(message):
+                return base + FAST_ACTION_HINT + lang
+            return base + FAST_CONVERSATIONAL_HINT + lang
+        if self.is_action(message):
+            return base + CONVERSATIONAL_ACTION_HINT + lang
+        return base + CONVERSATIONAL_HINT + lang
 
     def _clean_for_speech(self, text: str) -> str:
-        text = re.sub(r"```[\s\S]*?```", "Done, sir.", text)
+        done = "Tamamdır, efendim." if self.reply_language == "tr" else "Done, sir."
+        text = re.sub(r"```[\s\S]*?```", done, text)
         text = re.sub(r"`([^`]+)`", r"\1", text)
         text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
         text = re.sub(r"\*([^*]+)\*", r"\1", text)
@@ -429,12 +570,18 @@ class JarvisBrain:
         text = re.sub(r"\n{2,}", ". ", text)
         text = re.sub(r"\n", " ", text)
         text = re.sub(r"\s{2,}", " ", text).strip()
+        text = re.sub(r"([.!?])\s*\.(\s|$)", r"\1\2", text)
+        text = re.sub(r"\.{2,}", ".", text)
+        text = re.sub(r"\s{2,}", " ", text).strip()
         if len(text) > self.max_speech_chars:
             cut = text[:self.max_speech_chars].rsplit(".", 1)[0]
-            suffix = ", sir." if self.formal_address or self.persona == "iron_man" else "."
+            if self.reply_language == "tr":
+                suffix = ", efendim."
+            else:
+                suffix = ", sir." if self.formal_address or self.persona == "iron_man" else "."
             text = (cut + suffix) if cut else text[:self.max_speech_chars]
-        text = text or ("Done, sir." if self.persona == "iron_man" else "Done.")
-        if not self.formal_address and self.persona != "iron_man":
+        text = text or done
+        if self.reply_language != "tr" and not self.formal_address and self.persona != "iron_man":
             text = re.sub(r',?\s*\bsir\b\.?', '', text, flags=re.I)
             text = re.sub(r'\s{2,}', ' ', text).strip()
         return text

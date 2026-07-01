@@ -3,44 +3,60 @@ jarvis:
   user_name: sir
   formal_address: true
   persona: iron_man
-  language: tr-TR
+  language: en-GB
   voice: en-GB-RyanNeural
   wake_words:
     - jarvis
     - hey jarvis
     - ok jarvis
-  model: auto
-  think_timeout: 60
+  model: gemini-3-flash
+  models:
+    chat: gemini-3-flash
+    action: gemini-3-flash
+    search: gemini-3-flash
+    system: composer-2.5
+    code: composer-2.5
+    complex: composer-2.5
+    deep: auto
+    default: gemini-3-flash
+  model_routing: true
+  think_timeout: 45
   complex_timeout: 480
   deep_timeout: 900
   background_on_timeout: true
   fast_mode: true
   narrate: true
+  stream_preview: false
   work_updates: false
+  speak_ack: false
+  preload_brain: true
   ai_only: true
-  workspace: "/Users/mac/Desktop/Projeler/jarvis-ironman"
+  conversation_turns: 6
+  persona_refresh_interval: 5
+  workspace: "/Users/mac/Desktop/Projeler/projelerim-github/jarvis-ironman"
   full_access: true
   sandbox: false
   auto_review: false
-  setting_sources: all
-  max_speech_chars: 220
+  setting_sources: []
+  max_speech_chars: 280
   fast_boot: true
   skip_model_list: true
-  boot_delay: 0.08
+  boot_delay: 0.04
 
 voice:
   engine: jarvis
+  native_first: false
   cinematic: true
   native_voice: Daniel
-  native_rate: 145
-  edge_timeout: 8
+  native_rate: 165
+  edge_timeout: 10
   listen_language: tr-TR
-  listen_timeout: 5
-  phrase_limit: 8
+  listen_timeout: 4
+  phrase_limit: 6
   energy_threshold: 450
-  pause_threshold: 0.9
-  ambient_calibration_seconds: 1.2
-  speech_rate: "-15%"
+  pause_threshold: 0.7
+  ambient_calibration_seconds: 0.8
+  speech_rate: "+0%"
 
 ui:
   enabled: true
@@ -51,9 +67,9 @@ ui:
   telemetry_interval: 2
   always_listen: true
   require_wake_word: false
-  min_confidence: 0.55
-  pause_while_busy: true
-  min_command_length: 3
+  min_confidence: 0.5
+  pause_while_busy: false
+  min_command_length: 2
 
 system:
   full_shell_access: true

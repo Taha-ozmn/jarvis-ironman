@@ -73,6 +73,8 @@ class JarvisCore:
             native_rate=v.get("native_rate", 172),
             edge_timeout=v.get("edge_timeout", 14.0),
             cinematic=v.get("cinematic", True),
+            native_first=v.get("native_first", True),
+            language=os.environ.get("JARVIS_LANGUAGE", j.get("language", "en-GB")),
         )
         listen_lang = (
             os.environ.get("JARVIS_LISTEN_LANGUAGE")
@@ -100,7 +102,7 @@ class JarvisCore:
             model=j.get("model", "composer-2.5"),
             user_name=os.environ.get("JARVIS_USER_NAME", j.get("user_name", "sir")),
             formal_address=j.get("formal_address", True),
-            language=os.environ.get("JARVIS_LANGUAGE", j.get("language", "tr-TR")),
+            language=os.environ.get("JARVIS_LANGUAGE", j.get("language", "en-GB")),
             full_access=j.get("full_access", True),
             sandbox=j.get("sandbox", False),
             auto_review=j.get("auto_review", False),
@@ -114,9 +116,16 @@ class JarvisCore:
             narrate=j.get("narrate", True),
             work_updates=j.get("work_updates", True),
             persona=j.get("persona", "iron_man"),
+            conversation_turns=j.get("conversation_turns", 6),
+            persona_refresh_interval=j.get("persona_refresh_interval", 5),
+            model_routing=j.get("model_routing", True),
+            stream_preview=j.get("stream_preview", False),
+            models=j.get("models"),
         )
-        self.brain.fast_mode = j.get("fast_mode", False)
-        self.brain.max_speech_chars = j.get("max_speech_chars", 200)
+        self.brain.fast_mode = j.get("fast_mode", True)
+        self.brain.max_speech_chars = j.get("max_speech_chars", 280)
+        self.speak_ack = j.get("speak_ack", False)
+        self.preload_brain = j.get("preload_brain", True)
         self.ai_only = j.get("ai_only", True)
         self.narrator = JarvisNarrator()
         self.ui = None
@@ -162,18 +171,34 @@ class JarvisCore:
             if self.ui:
                 self.ui.send_telemetry(get_telemetry(self.brain.model))
         except Exception as err:
-            print(f"⚠️  Neural core: {err}")
+            err_text = str(err)
+            print(f"⚠️  Neural core: {err_text}")
+            if "tool-callback-auth-token" in err_text or "Bridge exited" in err_text:
+                print(
+                    "   Bridge bağlantı hatası — JARVIS yeniden deniyor. "
+                    "Sorun sürerse: ./start.sh ile yeniden başlatın."
+                )
+                try:
+                    from brain.sdk_patch import apply_sdk_patch
+                    apply_sdk_patch()
+                    self.brain.stop()
+                    self.brain.start()
+                    if self.ui:
+                        self.ui.send_telemetry(get_telemetry(self.brain.model))
+                    print("✅ Neural core bağlandı.")
+                    return
+                except Exception as retry_err:
+                    print(f"⚠️  Yeniden deneme başarısız: {retry_err}")
             self._set_status("error", str(err))
 
     def _send_boot_greeting(self) -> None:
         if self._boot_greeting_sent:
             return
         self._boot_greeting_sent = True
+        lang = self.config.get("jarvis", {}).get("language", "en-GB")
         greeting = (
-            f"{self.narrator.time_greeting()} "
-            "JARVIS online. All systems nominal. "
-            "Say stop listening or press the mic button to pause voice input. "
-            "Say listen again to resume. At your service."
+            f"{self.narrator.time_greeting(lang)} "
+            "JARVIS online — all systems nominal. At your service."
         )
         self._set_status("speaking", greeting)
         self._jarvis_speak(greeting)
@@ -241,7 +266,8 @@ class JarvisCore:
             print("   Terminal modu aktif.\n")
 
         def _finish_when_ready() -> None:
-            brain_thread.join(timeout=120)
+            if self.preload_brain:
+                brain_thread.join(timeout=120)
             self._send_boot_greeting()
 
         threading.Thread(target=_finish_when_ready, daemon=True).start()
@@ -522,11 +548,14 @@ class JarvisCore:
             else:
                 response = self.process_command(command)
                 if response is None:
-                    ack = self.narrator.instant_ack(command)
-                    self._jarvis_speak(ack)
-                    self._set_status("thinking", ack)
+                    if self.speak_ack:
+                        ack = self.narrator.instant_ack(command)
+                        self._jarvis_speak(ack)
+                        self._set_status("thinking", ack)
+                    else:
+                        self._set_status("thinking", "Processing…")
                     if not self.brain.is_ready():
-                        self._jarvis_speak("Connecting neural core, sir.")
+                        self._set_status("thinking", "Neural core connecting…")
                         self.brain.wait_ready(timeout=120)
                     response = self.brain.think_with_narration(
                         command,
@@ -536,6 +565,10 @@ class JarvisCore:
                             command, result,
                         ),
                     )
+                    if response and response not in (
+                        "That took longer than expected — shall I keep trying, sir?",
+                    ):
+                        self.brain.remember_turn(command, response)
                     self._emit_response(command, response)
                 elif response == "SHUTDOWN_JARVIS":
                     self.speaker.say("Powering down.")
@@ -571,6 +604,7 @@ class JarvisCore:
         """Called when a background task finishes after the initial timeout."""
         if not response:
             return
+        self.brain.remember_turn(command, response)
         self._emit_response(command, response)
         self._jarvis_speak(response)
         self._set_status("idle", "Standing by — speak your command")

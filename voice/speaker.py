@@ -112,6 +112,22 @@ class VoiceSpeaker:
                 self._queue.get_nowait()
             except queue.Empty:
                 break
+        self.interrupt()
+
+    def interrupt(self) -> None:
+        """Stop current TTS playback aggressively (afplay/say)."""
+        self._last_spoken = ""
+        for proc_name in ("afplay", "say"):
+            try:
+                subprocess.run(
+                    ["killall", proc_name],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=2,
+                )
+            except Exception:
+                pass
 
     def say(self, text: str) -> None:
         if text and text.strip():

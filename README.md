@@ -60,7 +60,7 @@ nano .env
 
 ```
 jarvis-ironman/
-├── main.py              # Ana döngü
+├── main.py              # Ana döngü (+ JARVIS 2.0 soft-init)
 ├── brain/
 │   └── cursor_brain.py  # Cursor SDK + JARVIS kişiliği
 ├── voice/
@@ -71,9 +71,31 @@ jarvis-ironman/
 ├── ui/
 │   ├── index.html       # Iron Man HUD
 │   └── server.py        # WebSocket sunucu
-└── config.yaml          # Ayarlar
+├── core/                # JARVIS 2.0 event bus, tasks, execution
+├── memory/              # SQLite bellek / migrations
+├── security/            # Permission 0–3, audit
+├── tools/               # Tool registry
+├── docs/JARVIS_2_ARCHITECTURE.md
+└── config.yaml          # Ayarlar (jarvis2 feature flags)
 ```
 
+### JARVIS 2.0 (Personal AI OS)
+
+Kalıcı SQLite bellek (FTS5), görevler, proje registry, git/dev tool’ları, izin seviyeleri (0–3), HUD onay, otomasyon (zaman + Downloads dosya izleme), planner, yedekleme, opsiyonel Playwright.
+
+Mevcut ses / HUD / Cursor / wake word yolu korunur. Detay: `docs/JARVIS_2_ARCHITECTURE.md`.
+
+```bash
+# Birim + entegrasyon testleri
+.venv/bin/python -m unittest discover -s tests -v
+
+# Opsiyonel browser otomasyonu
+pip install -r requirements-optional.txt && playwright install chromium
+```
+
+`config.yaml` → `jarvis2.enabled: false` ile v2 çekirdeği kapatılabilir.
+
+Örnek komutlar: «Jarvis status», «sistem durumunu kontrol et», «Jettel üzerinde çalış», «plan and organize», «İndirilenlere PDF gelince söyle …», «yedekle», «Jarvis dur».
 ## Ses ayarları
 
 `config.yaml` veya `.env` ile özelleştirin:

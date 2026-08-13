@@ -45,7 +45,12 @@ def apply_sdk_patch() -> None:
 
     _fix_bridge_version_env()
 
-    from cursor_sdk import _store_callback, _tool_callback
+    try:
+        from cursor_sdk import _store_callback, _tool_callback
+    except ImportError:
+        # Incomplete/mock SDK (tests) — version env fix above is still applied.
+        _applied = True
+        return
 
     def _safe_auth_token() -> str:
         while True:

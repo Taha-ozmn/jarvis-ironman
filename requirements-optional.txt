@@ -1,0 +1,8 @@
+# Optional extras — NOT required for JARVIS core / voice / HUD.
+# Interactive browser click/fill only:
+#
+#   pip install -r requirements-optional.txt
+#   playwright install chromium
+#
+# Without this file, browser tools use macOS `open` + urllib (read-only).
+playwright>=1.40.0

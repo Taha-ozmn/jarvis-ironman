@@ -65,6 +65,7 @@ ui:
   window_width: 1280
   window_height: 820
   telemetry_interval: 2
+  command_center_interval: 5
   always_listen: true
   require_wake_word: false
   min_confidence: 0.5
@@ -91,3 +92,42 @@ boot:
     player: music
     title: Back in Black
     artist: AC/DC
+
+# JARVIS 2.0 Personal AI OS — additive core (does not replace v1 path)
+# Phase 6: max_permission_level 3 — Level 3 (push/rm) still needs HUD/voice confirm (Phase 5).
+jarvis2:
+  enabled: true
+  soft_init: true
+  db_path: data/jarvis.db
+  max_permission_level: 3
+  auto_approve_dangerous: false
+  automation: true
+  automation_tick_seconds: 15
+  automation_max_failures: 3
+  confirm_timeout: 60
+  memory_recall_limit: 4
+  memory_recall_max_chars: 400
+  # Phase 7–8
+  plan_max_retries: 1
+  backup_retention: 10
+  file_watch_enabled: true
+  mcp:
+    enabled: true
+    # Live stdio MCP servers (empty = OK, diagnostics reports "no MCP servers")
+    servers: []
+    # Example:
+    # servers:
+    #   - name: demo
+    #     transport: stdio
+    #     command: python3
+    #     args: ["-m", "integrations.fake_mcp_server"]
+    #     permission_level: 1
+  proactive:
+    enabled: true
+    quiet_hours_start: 22
+    quiet_hours_end: 7
+    min_interval_seconds: 1800
+    max_per_hour: 3
+    daily_briefing_hour: 9
+    daily_briefing_minute: 0
+    seed_daily_briefing: false

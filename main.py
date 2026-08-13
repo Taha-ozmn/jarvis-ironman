@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 
 from brain.cursor_brain import JarvisBrain
 from brain.model_router import ModelRouter
+from config.loader import ensure_jarvis2_defaults
 from system.macos import MacOSController
 from system.hud_stats import get_telemetry
 from voice.listener import VoiceListener
@@ -41,7 +42,8 @@ BRITISH_VOICES = ("Daniel", "Reed", "Rocko")
 def load_config() -> dict:
     config_path = ROOT / "config.yaml"
     with open(config_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        raw = yaml.safe_load(f) or {}
+    return ensure_jarvis2_defaults(raw)
 
 
 def save_config(config: dict) -> None:
@@ -129,11 +131,25 @@ class JarvisCore:
         self.ai_only = j.get("ai_only", True)
         self.narrator = JarvisNarrator()
         self.ui = None
+        self.os_v2 = None  # JARVIS 2.0 core (optional soft-init)
         self._status = "idle"
         self._command_queue: queue.Queue[str] = queue.Queue()
         self._processing = threading.Lock()
         self._boot_greeting_sent = False
         self._listening_enabled = True
+
+        j2 = config.get("jarvis2", {})
+        if j2.get("enabled", True) and j2.get("soft_init", True):
+            from core.app import try_create_os
+
+            self.os_v2 = try_create_os(config, root=ROOT, macos=self.system)
+            if self.os_v2 is not None:
+                self.brain.set_memory_recall(self.os_v2.recall_for_prompt)
+                self.os_v2.set_speak_callback(self._jarvis_speak)
+                try:
+                    self.os_v2.bind_brain(self.brain)
+                except Exception:
+                    pass
 
     def set_mic_listening(self, enabled: bool, *, announce: bool = True) -> str:
         self._listening_enabled = enabled
@@ -158,6 +174,37 @@ class JarvisCore:
             return self.set_mic_listening(False, announce=False)
         if action == "resume":
             return self.set_mic_listening(True, announce=False)
+        return None
+
+    def try_stop_speech(self, command: str) -> Optional[str]:
+        """Interrupt TTS without shutting down JARVIS ('Jarvis dur', 'be quiet')."""
+        lower = (command or "").lower().strip()
+        # Strip wake prefixes
+        for prefix in ("hey jarvis ", "ok jarvis ", "jarvis "):
+            if lower.startswith(prefix):
+                lower = lower[len(prefix):].strip()
+        stop_phrases = (
+            "dur",
+            "stop",
+            "stop talking",
+            "stop speaking",
+            "be quiet",
+            "shut up",
+            "sus",
+            "kes",
+            "sessiz ol",
+            "konuşmayı kes",
+            "konusmayi kes",
+            "enough",
+        )
+        if lower in stop_phrases or any(
+            lower == p or lower.startswith(p + " ") for p in stop_phrases if len(p) > 2
+        ):
+            try:
+                self.speaker.flush()
+            except Exception:
+                pass
+            return "Standing by."
         return None
 
     def _handle_mic_control(self, enabled: bool, silent: bool = False) -> None:
@@ -265,6 +312,12 @@ class JarvisCore:
         else:
             print("   Terminal modu aktif.\n")
 
+        if self.os_v2 is not None:
+            try:
+                self.os_v2.start_background()
+            except Exception as err:
+                print(f"⚠️  Automation scheduler: {err}")
+
         def _finish_when_ready() -> None:
             if self.preload_brain:
                 brain_thread.join(timeout=120)
@@ -298,11 +351,22 @@ class JarvisCore:
             self.brain.stop()
         except Exception:
             pass
+        if self.os_v2 is not None:
+            try:
+                self.os_v2.close()
+            except Exception:
+                pass
         try:
             farewell = f"Powering down, {self.brain.user_name or 'sir'}. JARVIS signing off."
             self.speaker.speak(farewell)
         except Exception:
             pass
+
+    def jarvis2_health(self) -> Optional[dict]:
+        """Self-diagnostics for Phase-2 subsystems (None if core not loaded)."""
+        if self.os_v2 is None:
+            return None
+        return self.os_v2.health()
 
     def try_local_meta(self, command: str) -> Optional[str]:
         """Instant answers for meta/voice commands — skip slow AI round-trip."""
@@ -483,6 +547,15 @@ class JarvisCore:
         if not command.strip():
             return "I didn't catch that."
 
+        # Level-3 voice confirm — only when gate is waiting (interactive)
+        confirm_reply = self._try_voice_confirmation(command)
+        if confirm_reply is not None:
+            return confirm_reply
+
+        stop = self.try_stop_speech(command)
+        if stop is not None:
+            return stop
+
         shutdown = self.system.try_shutdown(command)
         if shutdown == "SHUTDOWN_JARVIS":
             return shutdown
@@ -490,6 +563,11 @@ class JarvisCore:
         listen = self.try_listen_control(command)
         if listen:
             return listen
+
+        # JARVIS 2.0 tool path — works even when ai_only is on
+        tool_reply = self._try_jarvis2_tools(command)
+        if tool_reply is not None:
+            return tool_reply
 
         if self.ai_only:
             return None
@@ -502,6 +580,7 @@ class JarvisCore:
         if quick_reply:
             return quick_reply
 
+        # Legacy local heuristics (v2 disabled or unmatched)
         quick = self.system.try_quick_action(command)
         if quick:
             return quick
@@ -527,6 +606,62 @@ class JarvisCore:
             return search
 
         return None
+
+    def _try_voice_confirmation(self, command: str) -> Optional[str]:
+        """Resolve pending Level-3 confirm via evet/hayır without tool routing."""
+        if self.os_v2 is None or not self.os_v2.confirmation.has_pending():
+            return None
+        from security.confirm_voice import classify_confirmation
+
+        decision = classify_confirmation(command)
+        if decision is None:
+            return None
+        approved = decision == "yes"
+        self.os_v2.confirmation.resolve_latest(approved)
+        if self.ui:
+            self.ui.send_command_center()
+        return "Confirmed." if approved else "Cancelled."
+
+    def _intercept_confirmation_outside_worker(self, command: str) -> bool:
+        """Used by voice loops so confirmations resolve while worker is blocked."""
+        if self.os_v2 is None or not self.os_v2.confirmation.has_pending():
+            return False
+        from security.confirm_voice import classify_confirmation
+
+        decision = classify_confirmation(command)
+        if decision is None:
+            return False
+        approved = decision == "yes"
+        self.os_v2.confirmation.resolve_latest(approved)
+        msg = "Confirmed." if approved else "Cancelled."
+        print(f"🔐 Confirm: {msg}")
+        try:
+            self.speaker.say(msg)
+        except Exception:
+            pass
+        if self.ui:
+            self.ui.send_response(command, msg)
+            self.ui.send_command_center()
+        return True
+
+    def _try_jarvis2_tools(self, command: str) -> Optional[str]:
+        if self.os_v2 is None:
+            return self._try_jarvis2_diagnostics(command)
+        return self.os_v2.try_handle_command(command)
+
+    def _try_jarvis2_diagnostics(self, command: str) -> Optional[str]:
+        """Fallback when core is disabled — only status phrases."""
+        lower = command.lower().strip()
+        triggers = (
+            "jarvis status",
+            "system status",
+            "self diagnostics",
+            "diagnostics",
+            "core status",
+        )
+        if not any(t in lower for t in triggers):
+            return None
+        return "JARVIS 2.0 core is not loaded."
 
     def _run_command(self, command: str) -> None:
         if not self._processing.acquire(blocking=False):
@@ -569,6 +704,8 @@ class JarvisCore:
                         "That took longer than expected — shall I keep trying, sir?",
                     ):
                         self.brain.remember_turn(command, response)
+                        if self.os_v2 is not None:
+                            self.os_v2.ingest_conversation(command, response)
                     self._emit_response(command, response)
                 elif response == "SHUTDOWN_JARVIS":
                     self.speaker.say("Powering down.")
@@ -605,6 +742,8 @@ class JarvisCore:
         if not response:
             return
         self.brain.remember_turn(command, response)
+        if self.os_v2 is not None:
+            self.os_v2.ingest_conversation(command, response)
         self._emit_response(command, response)
         self._jarvis_speak(response)
         self._set_status("idle", "Standing by — speak your command")
@@ -694,6 +833,14 @@ class JarvisCore:
                     self._set_status("idle", paused_detail)
                     continue
 
+                if self._intercept_confirmation_outside_worker(command):
+                    continue
+
+                # Interrupt TTS immediately even while worker is busy
+                if self.try_stop_speech(command) is not None:
+                    print("🔇 Speech interrupted")
+                    continue
+
                 self._command_queue.put(command)
             except KeyboardInterrupt:
                 break
@@ -720,6 +867,11 @@ class JarvisCore:
             try:
                 command = self.ui.wait_for_command(timeout=0.3)
                 if command:
+                    if self._intercept_confirmation_outside_worker(command):
+                        continue
+                    if self.try_stop_speech(command) is not None:
+                        print("🔇 Speech interrupted")
+                        continue
                     self._command_queue.put(command)
             except KeyboardInterrupt:
                 break
@@ -752,6 +904,11 @@ class JarvisCore:
                         self.speaker.say(control)
                     self._set_status("idle", paused_detail)
                     continue
+                if self._intercept_confirmation_outside_worker(command):
+                    continue
+                if self.try_stop_speech(command) is not None:
+                    print("🔇 Speech interrupted")
+                    continue
                 self._run_command(command)
             except KeyboardInterrupt:
                 break
@@ -759,7 +916,6 @@ class JarvisCore:
                 print(f"⚠️  Hata: {err}")
                 self._set_status("error", str(err))
                 time.sleep(1)
-
     def handle_text_loop(self) -> None:
         print("💬 Metin modu — 'quit' ile çıkış\n")
         while True:
@@ -791,10 +947,22 @@ def start_ui_server(
     from ui.server import JarvisUI
 
     interval = float(ui_config.get("telemetry_interval", 5 if desktop_mode else 2))
+    cc_interval = float(ui_config.get("command_center_interval", 5))
     mic_cfg = {
         **ui_config,
         "listen_language": core.config.get("voice", {}).get("listen_language", "tr-TR"),
     }
+
+    def _data_provider() -> dict:
+        if core.os_v2 is None:
+            return {"available": False, "reason": "JARVIS 2.0 core not loaded"}
+        return core.os_v2.command_center()
+
+    def _on_confirm(confirm_id: str, approved: bool) -> bool:
+        if core.os_v2 is None:
+            return False
+        return core.os_v2.confirmation.resolve(confirm_id, approved)
+
     core.ui = JarvisUI(
         port=port,
         mic_config=mic_cfg,
@@ -802,9 +970,34 @@ def start_ui_server(
         open_browser=open_browser,
         desktop_mode=desktop_mode,
         telemetry_interval=interval,
+        data_provider=_data_provider,
+        command_center_interval=cc_interval,
+        on_confirm=_on_confirm,
     )
     core.ui.on_mic_control = core._handle_mic_control
     core.ui.send_mic_state(core._listening_enabled)
+
+    if core.os_v2 is not None:
+        def _level_notify(level: int, tool: str, args: dict) -> None:
+            detail = str(args)[:120]
+            if core.ui:
+                core.ui.send_permission_notice(level=level, tool=tool, detail=detail)
+                if level >= 2:
+                    core.ui.broadcast(
+                        "thinking",
+                        f"L{level} {tool}",
+                    )
+
+        def _confirm_pending(pending) -> None:
+            if core.ui:
+                core.ui.send_confirm_request(pending.to_dict())
+                core.ui.send_command_center()
+
+        core.os_v2.set_ui_hooks(
+            on_level_notify=_level_notify,
+            on_confirm_pending=_confirm_pending,
+        )
+
     thread = threading.Thread(target=core.ui.run, daemon=True)
     thread.start()
     core.ui.wait_ready()

@@ -180,6 +180,11 @@ class JarvisBrain:
         self._ready = threading.Event()
         self._start_lock = threading.Lock()
         self._starting = False
+        self._long_term_recall: Optional[Callable[[str], str]] = None
+
+    def set_memory_recall(self, recall: Optional[Callable[[str], str]]) -> None:
+        """Optional SQLite long-term memory injector for prompts."""
+        self._long_term_recall = recall
 
     def is_ready(self) -> bool:
         return self._ready.is_set()
@@ -545,6 +550,13 @@ class JarvisBrain:
         context = self.memory.format_context(self.address)
         if context:
             base += f"{context}\n\n"
+        if self._long_term_recall:
+            try:
+                recall = self._long_term_recall(message) or ""
+            except Exception:
+                recall = ""
+            if recall:
+                base += f"{recall}\n\n"
         base += f"{message}\n\n"
         lang = self._lang_directive()
         if complexity == "deep":

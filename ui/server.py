@@ -1,4 +1,4 @@
-"""Iron Man HUD — WebSocket status + browser voice commands."""
+"""Iron Man HUD — WebSocket status, command center, confirmations."""
 
 from __future__ import annotations
 
@@ -14,8 +14,12 @@ from typing import Any, Callable, Optional
 from aiohttp import web
 
 from system.hud_stats import get_telemetry
+from ui.hud_data import build_command_center
 
 UI_DIR = Path(__file__).resolve().parent
+
+DataProvider = Callable[[], dict[str, Any]]
+ConfirmHandler = Callable[[str, bool], bool]
 
 
 class JarvisUI:
@@ -28,6 +32,9 @@ class JarvisUI:
         open_browser: bool = True,
         desktop_mode: bool = False,
         telemetry_interval: float = 2.0,
+        data_provider: Optional[DataProvider] = None,
+        command_center_interval: float = 5.0,
+        on_confirm: Optional[ConfirmHandler] = None,
     ) -> None:
         self.port = port
         self.mic_config = mic_config or {}
@@ -35,6 +42,9 @@ class JarvisUI:
         self.open_browser = open_browser
         self.desktop_mode = desktop_mode
         self.telemetry_interval = telemetry_interval
+        self.command_center_interval = max(2.0, float(command_center_interval))
+        self.data_provider = data_provider
+        self.on_confirm = on_confirm
         self.on_mic_control: Optional[Callable[[bool, bool], None]] = None
         self._mic_enabled = True
         self._clients: set[web.WebSocketResponse] = set()
@@ -45,10 +55,15 @@ class JarvisUI:
         self._app = web.Application()
         self._app.router.add_get("/", self._index)
         self._app.router.add_get("/ws", self._websocket)
+        self._app.router.add_get("/api/command-center", self._api_command_center)
 
     async def _index(self, request: web.Request) -> web.Response:
         html = (UI_DIR / "index.html").read_text(encoding="utf-8")
         return web.Response(text=html, content_type="text/html")
+
+    async def _api_command_center(self, request: web.Request) -> web.Response:
+        payload = self._snapshot()
+        return web.json_response(payload)
 
     async def _websocket(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse()
@@ -69,6 +84,7 @@ class JarvisUI:
             "desktop": self.desktop_mode,
             "native_mic": self.desktop_mode,
             "telemetry_interval_ms": int(self.telemetry_interval * 1000),
+            "command_center": True,
         }))
         await ws.send_str(json.dumps({
             "type": "telemetry",
@@ -78,6 +94,10 @@ class JarvisUI:
             "type": "mic_state",
             "enabled": self._mic_enabled,
         }))
+        await ws.send_str(json.dumps({
+            "type": "command_center",
+            "data": self._snapshot(),
+        }, ensure_ascii=False))
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
@@ -88,24 +108,53 @@ class JarvisUI:
             self._clients.discard(ws)
         return ws
 
+    def _snapshot(self) -> dict[str, Any]:
+        if not self.data_provider:
+            return {"available": False, "reason": "no data provider"}
+        try:
+            return self.data_provider()
+        except Exception as err:
+            return {"available": False, "reason": str(err)}
+
     def _handle_message(self, raw: str) -> None:
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
             return
-        if data.get("type") == "command":
+        msg_type = data.get("type")
+        if msg_type == "command":
             text = (data.get("text") or "").strip()
             if text:
                 self.broadcast("thinking", text)
                 self._command_queue.put(text)
             return
-        if data.get("type") == "mic_control":
+        if msg_type == "mic_control":
             enabled = bool(data.get("enabled", True))
             silent = bool(data.get("silent", False))
             self._mic_enabled = enabled
             self.send_mic_state(enabled)
             if self.on_mic_control:
                 self.on_mic_control(enabled, silent)
+            return
+        if msg_type == "confirm_response":
+            confirm_id = str(data.get("id") or "")
+            approved = bool(data.get("approved", False))
+            ok = False
+            if self.on_confirm and confirm_id:
+                try:
+                    ok = bool(self.on_confirm(confirm_id, approved))
+                except Exception:
+                    ok = False
+            self._emit({
+                "type": "confirm_ack",
+                "id": confirm_id,
+                "approved": approved,
+                "ok": ok,
+            })
+            self.send_command_center()
+            return
+        if msg_type == "refresh_command_center":
+            self.send_command_center()
 
     def send_mic_state(self, enabled: bool) -> None:
         self._mic_enabled = enabled
@@ -134,9 +183,31 @@ class JarvisUI:
             "status": "speaking",
             "detail": response,
         })
+        self.send_command_center()
 
     def send_telemetry(self, data: dict[str, Any]) -> None:
         self._emit({"type": "telemetry", "data": data})
+
+    def send_command_center(self, data: Optional[dict[str, Any]] = None) -> None:
+        payload = data if data is not None else self._snapshot()
+        self._emit({"type": "command_center", "data": payload})
+
+    def send_permission_notice(
+        self,
+        *,
+        level: int,
+        tool: str,
+        detail: str = "",
+    ) -> None:
+        self._emit({
+            "type": "permission_notice",
+            "level": level,
+            "tool": tool,
+            "detail": detail,
+        })
+
+    def send_confirm_request(self, payload: dict[str, Any]) -> None:
+        self._emit({"type": "confirm_request", "data": payload})
 
     def _emit(self, payload: dict[str, Any]) -> None:
         if not self._clients or not self._loop:
@@ -150,8 +221,13 @@ class JarvisUI:
 
     def _telemetry_loop(self) -> None:
         model = self.jarvis_config.get("model", "composer-2.5")
+        elapsed = 0.0
         while not self._telemetry_stop.is_set():
             self.send_telemetry(get_telemetry(model))
+            elapsed += self.telemetry_interval
+            if elapsed >= self.command_center_interval:
+                self.send_command_center()
+                elapsed = 0.0
             time.sleep(self.telemetry_interval)
 
     def run(self) -> None:

@@ -1,0 +1,44 @@
+# JARVIS 2.0 — Project registry (paths are expanded; missing paths stay listed as unavailable)
+# Prefer ~/... placeholders. Only existing directories are marked available at runtime.
+
+projects:
+  - key: jarvis
+    name: JARVIS Iron Man
+    path: ~/Desktop/jarvis-ironman-main
+    aliases:
+      - jarvis
+      - jarvis-ironman
+      - ironman
+    description: Personal AI OS / voice assistant
+
+  - key: jettel
+    name: Jettel Android
+    path: ~/Desktop/jettel-android-main
+    aliases:
+      - jettel
+      - jettel-android
+    description: Jettel Android project (placeholder if not cloned)
+
+  - key: passo_bot
+    name: Passo Bot
+    path: ~/Projects/passo_bot
+    aliases:
+      - passo
+      - passo_bot
+      - passo-bot
+    description: Passo bot (placeholder if not present)
+
+  - key: gnbtech
+    name: GNB Tech
+    path: ~/Projects/gnbtech
+    aliases:
+      - gnb
+      - gnbtech
+    description: GNB Tech workspace (placeholder if not present)
+
+  - key: jarvis_remote
+    name: JARVIS (configured workspace)
+    path: ~/Desktop/Projeler/projelerim-github/jarvis-ironman
+    aliases:
+      - jarvis-workspace
+    description: Alternate jarvis path from legacy config

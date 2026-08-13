@@ -1,0 +1,133 @@
+jarvis:
+  name: J.A.R.V.I.S.
+  user_name: sir
+  formal_address: true
+  persona: iron_man
+  language: en-GB
+  voice: en-GB-RyanNeural
+  wake_words:
+    - jarvis
+    - hey jarvis
+    - ok jarvis
+  model: gemini-3-flash
+  models:
+    chat: gemini-3-flash
+    action: gemini-3-flash
+    search: gemini-3-flash
+    system: composer-2.5
+    code: composer-2.5
+    complex: composer-2.5
+    deep: auto
+    default: gemini-3-flash
+  model_routing: true
+  think_timeout: 45
+  complex_timeout: 480
+  deep_timeout: 900
+  background_on_timeout: true
+  fast_mode: true
+  narrate: true
+  stream_preview: false
+  work_updates: false
+  speak_ack: false
+  preload_brain: true
+  ai_only: true
+  conversation_turns: 6
+  persona_refresh_interval: 5
+  workspace: "/Users/mac/Desktop/Projeler/projelerim-github/jarvis-ironman"
+  full_access: true
+  sandbox: false
+  auto_review: false
+  setting_sources: []
+  max_speech_chars: 280
+  fast_boot: true
+  skip_model_list: true
+  boot_delay: 0.04
+
+voice:
+  engine: jarvis
+  native_first: false
+  cinematic: true
+  native_voice: Daniel
+  native_rate: 165
+  edge_timeout: 10
+  listen_language: tr-TR
+  listen_timeout: 4
+  phrase_limit: 6
+  energy_threshold: 450
+  pause_threshold: 0.7
+  ambient_calibration_seconds: 0.8
+  speech_rate: "+0%"
+
+ui:
+  enabled: true
+  mode: browser
+  port: 8765
+  window_width: 1280
+  window_height: 820
+  telemetry_interval: 2
+  command_center_interval: 5
+  always_listen: true
+  require_wake_word: false
+  min_confidence: 0.5
+  pause_while_busy: false
+  min_command_length: 2
+
+system:
+  full_shell_access: true
+  allowed_apps:
+    - Spotify
+    - Chrome
+    - Safari
+    - Cursor
+    - Terminal
+    - Finder
+    - Notes
+    - Music
+    - Slack
+    - Discord
+
+boot:
+  music_enabled: false
+  music:
+    player: music
+    title: Back in Black
+    artist: AC/DC
+
+# JARVIS 2.0 Personal AI OS — additive core (does not replace v1 path)
+# Phase 6: max_permission_level 3 — Level 3 (push/rm) still needs HUD/voice confirm (Phase 5).
+jarvis2:
+  enabled: true
+  soft_init: true
+  db_path: data/jarvis.db
+  max_permission_level: 3
+  auto_approve_dangerous: false
+  automation: true
+  automation_tick_seconds: 15
+  automation_max_failures: 3
+  confirm_timeout: 60
+  memory_recall_limit: 4
+  memory_recall_max_chars: 400
+  # Phase 7–8
+  plan_max_retries: 1
+  backup_retention: 10
+  file_watch_enabled: true
+  mcp:
+    enabled: true
+    # Live stdio MCP servers (empty = OK, diagnostics reports "no MCP servers")
+    servers: []
+    # Example:
+    # servers:
+    #   - name: demo
+    #     transport: stdio
+    #     command: python3
+    #     args: ["-m", "integrations.fake_mcp_server"]
+    #     permission_level: 1
+  proactive:
+    enabled: true
+    quiet_hours_start: 22
+    quiet_hours_end: 7
+    min_interval_seconds: 1800
+    max_per_hour: 3
+    daily_briefing_hour: 9
+    daily_briefing_minute: 0
+    seed_daily_briefing: false

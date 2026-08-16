@@ -66,6 +66,7 @@ def register_phase3_tools(
     backup: Any = None,
     plan_runner: Any = None,
     llm: Any = None,
+    db: Any = None,
 ) -> None:
     """Register real tools across phases."""
     from pathlib import Path
@@ -141,3 +142,14 @@ def register_phase3_tools(
 
     for tool in real_tools:
         registry.register(tool)
+
+    # N-11 local calendar/notes (SQLite tables via migration 004)
+    if db is not None:
+        try:
+            from tools.calendar_notes import register_calendar_notes_tools
+
+            register_calendar_notes_tools(registry, db)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("calendar/notes tools failed to register")

@@ -24,7 +24,6 @@ from core.execution_engine import ExecutionEngine, ExecutionRequest
 from core.planner import Planner, make_llm_refine
 from core.task_manager import TaskManager
 from integrations.mcp_adapter import MCPAdapter
-from memory.database import Database
 from memory.extractor import extract_and_save
 from memory.repository import MemoryRepository
 from projects.registry import ProjectRegistry
@@ -33,6 +32,7 @@ from proactive.notifier import NotificationPolicy, ProactiveNotifier
 from security.audit import AuditLog
 from security.confirmation import ConfirmationGate
 from security.permissions import PermissionGate, PermissionLevel
+from storage.backend import open_backend
 from system.macos import MacOSController
 from tools.bootstrap import register_phase3_tools
 from tools.registry import ToolRegistry
@@ -73,7 +73,10 @@ class JarvisOS:
                 model=jarvis_cfg.get("model", "gemini-3-flash"),
             )
         )
-        self.db = Database(self.db_path)
+        # Always open DB at the resolved absolute path (not CWD-relative j2.db_path)
+        storage_cfg = dict(j2)
+        storage_cfg["db_path"] = str(self.db_path)
+        self.db = open_backend(storage_cfg, default_sqlite_path=self.db_path)
         self.db.migrate()
         self.memory = MemoryRepository(self.db)
         self.tasks = TaskManager(self.db)
@@ -164,6 +167,7 @@ class JarvisOS:
             backup=self.backup,
             plan_runner=self._run_plan_goal,
             llm=self.llm,
+            db=self.db,
         )
         # Optional plugins (Phase 3) — failures isolated
         try:

@@ -58,10 +58,18 @@ Statuses: `Completed` | `Partial` | `Next` | `Future`
 
 ## Future polish
 
+| ID | Description | Priority | Acceptance |
+|----|-------------|----------|------------|
+| N-11 | MCP Calendar/Notes pack | P2 | ✅ Local tools + optional `integrations.local_calendar_notes_mcp` |
+| N-12 | Postgres adapter | P2 | ✅ `storage.postgres` + `open_backend`; SQLite default |
+
+## Still open
+
 | ID | Description | Priority |
 |----|-------------|----------|
-| N-11 | MCP Calendar/Notes pack | P2 |
-| N-12 | Postgres adapter (implements StorageBackend) | P2 |
+| N-13 | Align main-config STT/TTS by default | P1 |
+| N-14 | Flip default `full_shell_access` false | P1 |
+| N-15 | Live Postgres CI / Apple Calendar sync | P2 |
 
 ---
 
@@ -69,15 +77,14 @@ Statuses: `Completed` | `Partial` | `Next` | `Future`
 
 ```
 WHAT CHANGED
-  N-01…N-10 on hardening branch: autonomy, dry-run, step budget, safe preset,
-  parallel diagnostics, storage seam, PyAudio docs.
+  N-11 notes/calendar tools + optional MCP server; N-12 Postgres adapter + open_backend.
 
 WHY
-  Complete Next control surfaces for phases 9/11/13/14 without rewrite.
+  Second-brain surfaces (notes/calendar) and Phase 14 storage without rewrite.
 
 TEST RESULT
-  237 unittest OK (2 skipped optional e2e).
+  unittest discover green (calendar + storage factory tests included).
 
 NEXT
-  N-11 MCP packs / N-12 Postgres when needed; merge PR #3 when ready.
+  N-13/N-14 safer defaults when ready to merge PR #3; optional live Postgres.
 ```

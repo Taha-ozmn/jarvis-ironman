@@ -102,6 +102,10 @@ jarvis2:
   enabled: true
   soft_init: true
   db_path: data/jarvis.db
+  # Optional Postgres (pip install -r requirements-optional.txt):
+  # storage:
+  #   backend: postgres
+  #   dsn: postgresql://user:pass@localhost:5432/jarvis
   max_permission_level: 3
   auto_approve_dangerous: false
   # Progressive autonomy (§71): 1=ask all … 4=auto through SYSTEM, confirm DANGEROUS
@@ -125,8 +129,15 @@ jarvis2:
   automation_packs_dir: config/automation_packs
   mcp:
     enabled: true
-    # Live stdio MCP servers (empty = OK, diagnostics reports "no MCP servers")
+    # Live stdio MCP servers (empty = OK — local notes/calendar tools are built-in)
     servers: []
+    # Optional Calendar/Notes MCP pack (separate DB process):
+    # servers:
+    #   - name: calendar_notes
+    #     transport: stdio
+    #     command: python3
+    #     args: ["-m", "integrations.local_calendar_notes_mcp"]
+    #     permission_level: 1
     # Example:
     # servers:
     #   - name: demo

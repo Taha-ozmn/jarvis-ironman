@@ -1,8 +1,6 @@
 """Storage backend Protocol — SQLite today, Postgres-ready seam (Phase 14).
 
-JarvisOS still constructs `memory.database.Database`. Callers that need
-backend-agnostic typing can depend on `StorageBackend` instead of the
-concrete class. A future Postgres adapter implements the same surface.
+JarvisOS uses `open_backend(j2)` so the concrete engine is config-driven.
 """
 
 from __future__ import annotations
@@ -35,6 +33,35 @@ def open_sqlite(path: Path | str) -> StorageBackend:
     from memory.database import Database
 
     return Database(path)
+
+
+def open_backend(
+    j2: Optional[dict[str, Any]] = None,
+    *,
+    default_sqlite_path: Path | str = "data/jarvis.db",
+) -> StorageBackend:
+    """Open storage from jarvis2 config.
+
+    ```yaml
+    jarvis2:
+      db_path: data/jarvis.db          # sqlite (default)
+      storage:
+        backend: sqlite | postgres
+        dsn: postgresql://...          # required for postgres
+    ```
+    """
+    cfg = j2 or {}
+    storage = cfg.get("storage") or {}
+    kind = str(storage.get("backend") or "sqlite").strip().lower()
+    if kind in ("postgres", "postgresql", "pg"):
+        dsn = str(storage.get("dsn") or "").strip()
+        if not dsn:
+            raise ValueError("jarvis2.storage.dsn required when backend=postgres")
+        from storage.postgres import PostgresDatabase
+
+        return PostgresDatabase(dsn, display_path=dsn.split("@")[-1] if "@" in dsn else "postgres")
+    path = cfg.get("db_path") or storage.get("path") or default_sqlite_path
+    return open_sqlite(path)
 
 
 def backend_kind(db: Any) -> str:

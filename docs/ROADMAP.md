@@ -3,63 +3,46 @@
 **Kaynak:** `docs/ARCHITECTURE_AUDIT.md`  
 **Ölçüt:** Doğrulanmış icra; ham `Could not open` yok; sonsuz retry yok.
 
-Durum: `Completed` | `In Progress` | `Next` | `Future`
-
 ---
 
 ## Completed
 
 | ID | Description |
 |----|-------------|
-| C-01…C-05 | Soft-init OS, permissions, router, automation, HUD |
-| P0-AUDIT | Architecture audit + roadmap docs |
-| S-01…S-06 | Phase 1 stability |
-| O-01…O-03 | Phase 2 orchestrator |
-| T-01 | Tool validate/rollback + plugins |
-| K-02/K-03 | Task states + plan cancel/resume |
-| M-01 | Hybrid memory retrieval |
-| V-01 | ExecutionEvidence |
-| R-01 | Degraded mode + model routing |
-| X-01 | Security / tools / memory docs |
-| Q-01 | Chaos/recovery tests |
-| U-01 | Streaming HUD plan progress (WS `plan_progress`) |
-| V-02 | Verify `fs.write`/`fs.create`/`git.add`/`git.push` |
-| P-01 | Cursor trim — fillers + local phrases as CHAT/SIMPLE |
-| H-01 | `GET /api/health` production probe |
-| A-01 | Automation YAML packs loader |
+| P0 / S / O / T / K / M / V / R / X / Q | Phases 0–7 core |
+| U-01 | Streaming HUD `plan_progress` |
+| V-02 | Verify fs/git write·add·push |
+| P-01 | Cursor trim fillers / local phrases |
+| H-01 | `GET /api/health` |
+| A-01 | Automation YAML packs |
+| U-02 | HUD PLAN timeline pane |
+| V-03 | Verify browser + `dev.run_command` |
+| P-02 | Background plan speech throttle |
+| O-04a | `core/decision.py` facade (prep; no DecisionEngine rewrite) |
 
 ---
 
 ## Next
 
-| ID | Description | Priority | Dependencies |
-|----|-------------|----------|--------------|
-| O-04 | DecisionEngine (when introduced) — avoid Router duplication | P1 | — |
-| V-03 | Broader verify for browser/dev tools | P2 | V-02 |
-| U-02 | HUD plan timeline pane (history of steps) | P2 | U-01 |
-| P-02 | Background plan speech throttle | P2 | U-01 |
+| ID | Description | Priority |
+|----|-------------|----------|
+| O-04b | Optional DecisionEngine only if Router/complexity diverge further | P2 |
+| U-03 | Confirm UX polish / mic pause indicators | P2 |
+| V-04 | Verify Playwright fill/click when optional deps present | P3 |
 
 ---
 
 ## Future
 
-Voice layer refinements, production dashboards, DecisionEngine consolidation. Incremental only.
-
-**Yapılmayacak:** Full rewrite, PostgreSQL zorunluluğu, voice/HUD/Cursor kaldırma.
+Voice refinements, production dashboards. No full rewrite / forced PostgreSQL / removing voice·HUD·Cursor.
 
 ---
 
-## Phase report (Phase 1–8+)
+## Phase report
 
 ```
-WHAT CHANGED
-  Phase 1–7: stability, orchestrator, tools, memory, evidence, degraded.
-  Phase 8+: plan_progress → HUD WS; fs/git verify; Cursor filler trim;
-  /api/health; automation YAML packs.
+Phase 8 follow-on: plan_timeline → HUD PLAN tab; browser/dev verify;
+throttled background plan speech; decision facade for routing docs.
 
-TEST RESULT
-  unittest discover — full suite green.
-
-NEXT
-  DecisionEngine (if added); HUD plan timeline; more verify coverage.
+Tests: unittest discover green.
 ```

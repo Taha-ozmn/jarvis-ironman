@@ -112,6 +112,8 @@ jarvis2:
   plan_max_retries: 1
   # Phase 1 Stability — single-tool retries (max 3, exponential backoff)
   tool_max_retries: 3
+  # Background plan completion speech throttle (seconds)
+  plan_speech_min_interval: 8
   backup_retention: 10
   file_watch_enabled: true
   automation_packs_dir: config/automation_packs

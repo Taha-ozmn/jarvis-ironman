@@ -199,6 +199,8 @@ class JarvisOS:
         self.recall_limit = int(j2.get("memory_recall_limit", 4))
         self.recall_max_chars = int(j2.get("memory_recall_max_chars", 400))
         self.proactive_enabled = bool(proactive_cfg.get("enabled", True))
+        self.plan_speech_min_interval = float(j2.get("plan_speech_min_interval", 8.0))
+        self._last_plan_speech_at: float = 0.0
         self._ready = True
         self._last_turn = None
         self._last_complexity = None
@@ -499,17 +501,37 @@ class JarvisOS:
             )
         if background or len(plan.steps) >= 4:
             def _done(result: Any) -> None:
-                if self._speak and result.speech:
-                    try:
-                        self._speak(result.speech[:280])
-                    except Exception:
-                        logger.exception("plan background speak failed")
+                self._speak_plan_result(result)
 
             msg = self.execution.execute_plan_background(plan, on_done=_done)
             preview = plan.summary(max_chars=160)
             return f"{msg} {preview}"
         result = self.execution.execute_plan(plan)
         return result.speech
+
+    def _speak_plan_result(self, result: Any) -> None:
+        """Background plan completion speech — throttled short summary (P-02)."""
+        import time
+
+        if not self._speak:
+            return
+        now = time.time()
+        if now - self._last_plan_speech_at < self.plan_speech_min_interval:
+            logger.info("plan speech throttled (%.1fs gap)", self.plan_speech_min_interval)
+            return
+        self._last_plan_speech_at = now
+        ok = bool(getattr(result, "ok", False))
+        completed = int(getattr(result, "completed", 0) or 0)
+        total = int(getattr(result, "total", 0) or 0)
+        if ok:
+            text = f"Plan complete — {completed}/{total} steps."
+        else:
+            reason = str(getattr(result, "stopped_reason", "") or "stopped")[:120]
+            text = f"Plan stopped at {completed}/{total}: {reason}"
+        try:
+            self._speak(text[:200])
+        except Exception:
+            logger.exception("plan background speak failed")
 
     def recall_for_prompt(self, query: str) -> str:
         """Relevant long-term memories for LLM context — hybrid rank, not a dump."""

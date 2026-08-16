@@ -90,6 +90,7 @@ class ExecutionEngine:
         self._cancel_token = CancellationToken()
         self.last_evidence: list[ExecutionEvidence] = []
         self.last_plan_progress: Optional[dict[str, Any]] = None
+        self.plan_timeline: list[dict[str, Any]] = []
 
     def cancel_active_plan(self, reason: str = "user_cancel") -> bool:
         """Signal cancel for the in-flight plan (cooperative)."""
@@ -437,8 +438,25 @@ class ExecutionEngine:
             set_active_token(None)
 
     def _set_plan_progress(self, payload: dict[str, Any]) -> None:
-        self.last_plan_progress = dict(payload)
-        self.bus.publish("plan.progress", payload, source="execution_engine")
+        import time
+
+        entry = dict(payload)
+        entry.setdefault("ts", time.time())
+        self.last_plan_progress = entry
+        # Timeline: keep step history for HUD PLAN pane (U-02)
+        phase = str(entry.get("phase") or "")
+        if phase in (
+            "started",
+            "running",
+            "completed",
+            "failed",
+            "paused",
+            "cancelled",
+        ):
+            self.plan_timeline.append(entry)
+            if len(self.plan_timeline) > 48:
+                self.plan_timeline = self.plan_timeline[-48:]
+        self.bus.publish("plan.progress", entry, source="execution_engine")
 
     def resume_paused_plan(self) -> Optional[PlanRunResult]:
         with self._plan_lock:

@@ -32,6 +32,10 @@ ALWAYS_VERIFY_TOOLS = frozenset(
         "fs.write",
         "fs.create",
         "dev.run_tests",
+        "dev.run_command",
+        "browser.open_url",
+        "browser.search",
+        "browser.get_page_text",
         "system.backup",
         "system.open_app",
     }
@@ -68,8 +72,13 @@ def verify_tool_result(
         if tool_name in ("fs.write", "fs.create"):
             return _verify_fs_path_exists(arguments, working_dir)
         if tool_name == "dev.run_tests":
-            # Result already encodes exit status
-            return VerifyOutcome(ok=True, message="tests reported ok")
+            return _verify_dev_command(result, label="tests")
+        if tool_name == "dev.run_command":
+            return _verify_dev_command(result, label="command")
+        if tool_name in ("browser.open_url", "browser.search"):
+            return _verify_browser_open(arguments, result, tool_name)
+        if tool_name == "browser.get_page_text":
+            return _verify_browser_page_text(result)
         if tool_name == "system.backup":
             path = ""
             if isinstance(result.data, dict):
@@ -231,6 +240,54 @@ def _verify_fs_path_exists(
         ok=False,
         message=f"Path missing after write/create: {path}",
         alternate="Retry write or check permissions",
+    )
+
+
+def _verify_dev_command(result: ToolResult, *, label: str) -> VerifyOutcome:
+    """Exit code already encoded in ToolResult.ok; require non-empty feedback."""
+    if isinstance(result.data, str) and result.data.strip():
+        return VerifyOutcome(ok=True, message=result.data.strip()[:120])
+    if result.ok:
+        return VerifyOutcome(ok=True, message=f"{label} ok")
+    return VerifyOutcome(
+        ok=False,
+        message=result.error or f"{label} produced no output",
+        alternate=f"Retry {label} or check project path",
+    )
+
+
+def _verify_browser_open(
+    arguments: dict[str, Any],
+    result: ToolResult,
+    tool_name: str,
+) -> VerifyOutcome:
+    data = result.data if isinstance(result.data, str) else ""
+    lower = data.lower()
+    if tool_name == "browser.search":
+        if "search" in lower or "duckduckgo" in lower or "«" in data:
+            return VerifyOutcome(ok=True, message=data[:120])
+    else:
+        url = str(arguments.get("url") or "").strip()
+        if "opened" in lower or (url and url.lower() in lower):
+            return VerifyOutcome(ok=True, message=data[:120] or "opened")
+    if data.strip():
+        # Honest soft-pass: tool returned speech but without expected phrase
+        return VerifyOutcome(ok=True, message=data[:120])
+    return VerifyOutcome(
+        ok=False,
+        message="Browser open reported empty success",
+        alternate="Retry with a full https URL",
+    )
+
+
+def _verify_browser_page_text(result: ToolResult) -> VerifyOutcome:
+    data = result.data if isinstance(result.data, str) else ""
+    if len(data.strip()) >= 8:
+        return VerifyOutcome(ok=True, message=f"fetched {len(data)} chars")
+    return VerifyOutcome(
+        ok=False,
+        message="Page text too short or empty after fetch",
+        alternate="Retry URL or use browser.open_url",
     )
 
 

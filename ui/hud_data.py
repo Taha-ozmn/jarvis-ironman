@@ -184,4 +184,9 @@ def build_command_center(os_core: Any) -> dict[str, Any]:
         "plan_progress": getattr(
             getattr(os_core, "execution", None), "last_plan_progress", None
         ),
+        "plan_timeline": list(
+            reversed(
+                getattr(getattr(os_core, "execution", None), "plan_timeline", None) or []
+            )
+        )[:24],
     }

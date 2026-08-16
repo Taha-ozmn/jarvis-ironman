@@ -573,6 +573,7 @@
       <div class="cc-summary" id="cc-summary">CORE OFFLINE</div>
       <div class="cc-tabs" id="cc-tabs">
         <button type="button" class="cc-tab active" data-tab="tasks">TASKS</button>
+        <button type="button" class="cc-tab" data-tab="plan">PLAN</button>
         <button type="button" class="cc-tab" data-tab="memory">MEMORY</button>
         <button type="button" class="cc-tab" data-tab="projects">PROJECTS</button>
         <button type="button" class="cc-tab" data-tab="automations">AUTOMATIONS</button>
@@ -581,6 +582,7 @@
         <button type="button" class="cc-tab" data-tab="settings">SETTINGS</button>
       </div>
       <div class="cc-pane active" id="pane-tasks"></div>
+      <div class="cc-pane" id="pane-plan"></div>
       <div class="cc-pane" id="pane-memory"></div>
       <div class="cc-pane" id="pane-projects"></div>
       <div class="cc-pane" id="pane-automations"></div>
@@ -791,6 +793,13 @@
         `<div class="cc-item"><strong>#${t.id}</strong> [${t.status}] ${t.title}` +
         `<div class="meta">priority ${t.priority}${t.due_at ? ' · due ' + t.due_at : ''}</div></div>`
       );
+      renderList(document.getElementById('pane-plan'), data.plan_timeline, (p) => {
+        if (!p || p.error) return `<div class="cc-item">${(p && p.error) || '—'}</div>`;
+        const step = p.step != null ? `${p.step}/${p.total || '?'}` : '';
+        const mark = p.ok === false ? '✗' : (p.phase === 'completed' || p.ok ? '✓' : '·');
+        return `<div class="cc-item">${mark} [${(p.phase || '').toUpperCase()}] ${step} ${p.tool || p.description || ''}` +
+          `<div class="meta">${(p.goal || p.description || '').toString().slice(0, 80)}</div></div>`;
+      });
       renderList(document.getElementById('pane-memory'), data.memory, (m) =>
         m.error ? `<div class="cc-item">${m.error}</div>` :
         `<div class="cc-item">${m.content}<div class="meta">${m.category || 'general'}</div></div>`
@@ -1029,6 +1038,20 @@
         if (data.type === 'command_center') updateCommandCenter(data.data);
         if (data.type === 'plan_progress' && data.data) {
           updatePlanProgress(data.data);
+          // Soft-refresh PLAN pane if we already have command-center data shape
+          const pane = document.getElementById('pane-plan');
+          if (pane && data.data.phase) {
+            const p = data.data;
+            const step = p.step != null ? `${p.step}/${p.total || '?'}` : '';
+            const mark = p.ok === false ? '✗' : (p.phase === 'completed' || p.ok ? '✓' : '·');
+            const row = document.createElement('div');
+            row.className = 'cc-item';
+            row.innerHTML = `${mark} [${(p.phase || '').toUpperCase()}] ${step} ${p.tool || p.description || ''}` +
+              `<div class="meta">${(p.goal || '').toString().slice(0, 80)}</div>`;
+            if (pane.querySelector('.cc-empty')) pane.innerHTML = '';
+            pane.prepend(row);
+            while (pane.children.length > 24) pane.removeChild(pane.lastChild);
+          }
         }
         if (data.type === 'permission_notice') {
           showPermissionToast(data.level || 2, data.tool || 'tool', data.detail || '');

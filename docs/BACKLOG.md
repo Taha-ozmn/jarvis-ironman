@@ -20,7 +20,6 @@ Phases 0–8+ shipped in **v2.0.0**. Remaining items are product polish, not mis
 | Pri | Item | Notes |
 |-----|------|--------|
 | P1 | Change default STT to match TTS | Opt-in via safe preset; main config still TR listen / EN speak |
-| P1 | PyAudio optional for mic fallback | Document / optional install in `start.sh` |
 | P1 | Flip default `full_shell_access` to false | Safe preset ready; default left true for compat |
 | P2 | MCP Calendar/Notes servers | `jarvis2.mcp.servers: []` by design |
 | P2 | Playwright interactive browser | Optional deps |
@@ -28,4 +27,4 @@ Phases 0–8+ shipped in **v2.0.0**. Remaining items are product polish, not mis
 | P2 | Postgres `StorageBackend` impl | Protocol + factory ready |
 
 ## Not gaps
-Open-app verify, DecisionEngine, HUD confirm, hybrid memory, CI, autonomy/dry-run/steps, parallel health, storage seam — done.
+Open-app verify, DecisionEngine, HUD confirm, hybrid memory, CI, autonomy/dry-run/steps, parallel health, storage seam, PyAudio docs — done.

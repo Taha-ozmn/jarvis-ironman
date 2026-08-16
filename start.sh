@@ -34,6 +34,12 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$REQ_HASH" ]; then
   echo "$REQ_HASH" > "$STAMP"
 fi
 
+# Optional desktop mic fallback (non-fatal — browser HUD mic works without it)
+if ! "$VENV_PYTHON" -c "import pyaudio" 2>/dev/null; then
+  echo "ℹ️  PyAudio yok (opsiyonel). Desktop mic için: brew install portaudio && pip install PyAudio"
+  echo "   Browser HUD mikrofonu PyAudio gerektirmez."
+fi
+
 if [ ! -f ".env" ]; then
   cp .env.example .env
   echo ""

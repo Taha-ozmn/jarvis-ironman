@@ -50,10 +50,18 @@ Statuses: `Completed` | `Partial` | `Next` | `Future`
 
 | ID | Description | Priority | Acceptance |
 |----|-------------|----------|------------|
-| N-06 | Align default listen/speak language | P1 | Config + docs; dual-locale optional |
-| N-07 | Safer shell preset | P1 | `full_shell_access` false option documented |
-| N-08 | Parallel independent probes | P2 | Health/git/fs fan-out |
-| N-09 | Storage abstraction seam | P2 | Interface over SQLite |
+| N-06 | Align default listen/speak language | P1 | ✅ Diagnostic + safe preset aligned; default still dual-locale |
+| N-07 | Safer shell preset | P1 | ✅ `config/presets/safe.yaml` (`full_shell_access: false`) |
+| N-08 | Parallel independent probes | P2 | ✅ Diagnostics via `run_parallel` |
+| N-09 | Storage abstraction seam | P2 | ✅ `storage.StorageBackend` + sqlite factory |
+
+## Future polish
+
+| ID | Description | Priority |
+|----|-------------|----------|
+| N-10 | Optional PyAudio mic path docs | P1 |
+| N-11 | MCP Calendar/Notes pack | P2 |
+| N-12 | Postgres adapter (implements StorageBackend) | P2 |
 
 ---
 

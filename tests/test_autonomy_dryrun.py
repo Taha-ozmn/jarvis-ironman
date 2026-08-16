@@ -136,14 +136,20 @@ class MaxAgentStepsTests(unittest.TestCase):
 class LanguageAlignTests(unittest.TestCase):
     def test_mismatch_warning(self) -> None:
         info = check_language_alignment(
-            {"jarvis": {"language": "en-GB", "listen_language": "tr-TR"}}
+            {
+                "jarvis": {"language": "en-GB"},
+                "voice": {"listen_language": "tr-TR"},
+            }
         )
         self.assertFalse(info.aligned)
         self.assertIn("differ", info.warning)
 
     def test_aligned(self) -> None:
         info = check_language_alignment(
-            {"jarvis": {"language": "tr-TR", "listen_language": "tr-TR"}}
+            {
+                "jarvis": {"language": "tr-TR"},
+                "voice": {"listen_language": "tr-TR"},
+            }
         )
         self.assertTrue(info.aligned)
 

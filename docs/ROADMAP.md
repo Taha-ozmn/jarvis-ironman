@@ -54,12 +54,12 @@ Statuses: `Completed` | `Partial` | `Next` | `Future`
 | N-07 | Safer shell preset | P1 | ✅ `config/presets/safe.yaml` (`full_shell_access: false`) |
 | N-08 | Parallel independent probes | P2 | ✅ Diagnostics via `run_parallel` |
 | N-09 | Storage abstraction seam | P2 | ✅ `storage.StorageBackend` + sqlite factory |
+| N-10 | Optional PyAudio mic path docs | P1 | ✅ DEVELOPMENT + `start.sh` hint |
 
 ## Future polish
 
 | ID | Description | Priority |
 |----|-------------|----------|
-| N-10 | Optional PyAudio mic path docs | P1 |
 | N-11 | MCP Calendar/Notes pack | P2 |
 | N-12 | Postgres adapter (implements StorageBackend) | P2 |
 
@@ -69,14 +69,15 @@ Statuses: `Completed` | `Partial` | `Next` | `Future`
 
 ```
 WHAT CHANGED
-  N-01…N-05: autonomy levels, dry-run, max_agent_steps, docs, language diagnostic.
+  N-01…N-10 on hardening branch: autonomy, dry-run, step budget, safe preset,
+  parallel diagnostics, storage seam, PyAudio docs.
 
 WHY
-  Master spec §71 / dry-run / agent loop budget without rewriting core.
+  Complete Next control surfaces for phases 9/11/13/14 without rewrite.
 
 TEST RESULT
-  unittest discover green (incl. test_autonomy_dryrun).
+  237 unittest OK (2 skipped optional e2e).
 
 NEXT
-  N-06…N-09 (voice align, shell preset, parallel probes, storage seam).
+  N-11 MCP packs / N-12 Postgres when needed; merge PR #3 when ready.
 ```

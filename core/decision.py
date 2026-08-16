@@ -1,7 +1,7 @@
-"""Thin decision facade — documents turn routing order (O-04 prep).
+"""DecisionEngine — canonical Cursor gate for JarvisOS.handle_turn (O-04).
 
-Does not replace CommandRouter or complexity gate. Callers still use
-JarvisOS.handle_turn; this module records the intended decision path.
+Does not replace CommandRouter (NL → tools). Complexity + degraded mode
+live here so handle_turn does not duplicate gate logic.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ class TurnDecision:
 
 
 def decide_turn(command: str, *, degraded: bool = False) -> TurnDecision:
-    """Classify before execution — Cursor only when MEDIUM+ and not degraded."""
+    """Classify before local handlers — Cursor only when MEDIUM+ and not degraded."""
     complexity = classify_task_complexity(command)
     if degraded:
         return TurnDecision(
@@ -44,9 +44,7 @@ def decide_turn(command: str, *, degraded: bool = False) -> TurnDecision:
         return TurnDecision(
             complexity=complexity,
             allow_cursor=False,
-            preferred_path=BrainPath.BLOCKED
-            if complexity is TaskComplexity.SIMPLE
-            else BrainPath.META,
+            preferred_path=BrainPath.BLOCKED,
             reason=f"gate:{complexity.value}",
         )
     return TurnDecision(
@@ -74,3 +72,31 @@ def path_after_local(
     if decision is None:
         return BrainPath.DEEP
     return decision.preferred_path
+
+
+class DecisionEngine:
+    """Single place for complexity + degraded Cursor policy."""
+
+    def decide(self, command: str) -> TurnDecision:
+        degraded = False
+        try:
+            from core.degraded import get_degraded_mode
+
+            degraded = bool(get_degraded_mode().active) or (
+                not get_degraded_mode().allow_cursor()
+            )
+        except Exception:
+            degraded = False
+        return decide_turn(command, degraded=degraded)
+
+    def fallback_speech(self, decision: TurnDecision, command: str = "") -> str:
+        from core.complexity import TaskComplexity, local_fallback_speech
+
+        if decision.preferred_path is BrainPath.DEGRADED:
+            if decision.complexity in (TaskComplexity.CHAT, TaskComplexity.SIMPLE):
+                return local_fallback_speech(decision.complexity, command)
+            return (
+                "I'm in offline mode — local tools only. "
+                "Try a direct command, or restore the model connection."
+            )
+        return local_fallback_speech(decision.complexity, command)

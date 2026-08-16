@@ -2,7 +2,7 @@
 
 **Proje:** `/workspace` (github.com/Taha-ozmn/jarvis-ironman)  
 **Tarih:** 2026-08-16  
-**Faz:** Phase 0 Audit + Phase 1 Stability (bu PR)
+**Faz:** Phases 0–8+ **COMPLETE** (PR branch `cursor/phase1-stability-b2cd`)
 
 ---
 
@@ -13,52 +13,27 @@ Hibrit iki katman:
 | Katman | Giriş | Rol |
 |--------|-------|-----|
 | v1 | `main.py` → `JarvisCore` | Voice, HUD, Cursor DeepBrain |
-| v2 | `core/app.py` → `JarvisOS` | ToolRegistry, SQLite, ExecutionEngine, Automation |
+| v2 | `core/app.py` → `JarvisOS` | ToolRegistry, SQLite, ExecutionEngine, DecisionEngine |
 
-**Akış:** Mic/UI → `process_command` → JarvisOS tools → (miss) legacy macOS → Cursor.
+**Akış:** Mic/UI → `process_command` → `handle_turn` → tools → meta → legacy → DecisionEngine gate → Cursor.
 
-**Stack:** Python 3.10+, Cursor SDK, edge-tts, aiohttp HUD, SQLite WAL.
+**Stack:** Python 3.10+, Cursor SDK, edge-tts, aiohttp HUD, SQLite WAL, optional Playwright.
 
-## 2. Architecture Problems
+## 2–3. Problems addressed
 
-- Orkestratör bölünmüş (`JarvisCore` + `JarvisOS`); tek `JarvisOrchestrator` yok
-- Intent çoğunlukla keyword (`CommandRouter`)
-- `ai_only: true` iken action miss → Cursor sohbet (Phase 1’de legacy action path eklendi)
-- Workspace config stale absolute path olabiliyordu (Phase 1: `.` → repo root)
-- `_open_app` eskiden `Popen` ile **her zaman başarı** iddia ediyordu (kritik)
+- Open-app false success → verified + retries + recovery speech
+- CHAT/SIMPLE Cursor cost → DecisionEngine gate
+- No cancel/evidence → CancellationToken + ExecutionEvidence
+- Weak recall → hybrid memory retrieval
+- No plan HUD → `plan_progress` + PLAN timeline
+- Level-3 UX → countdown, Enter/Esc, desktop focus
 
-## 3. "Could not open" Root Cause
+## 4. KEEP
 
-1. `open -a` tek deneme, returncode kontrolü yoktu (Popen)
-2. STT/Türkçe hedef çıkarımı (`açık` → `ık` riski)
-3. Alias/Applications fallback yoktu
-4. Ham `Could not open {name}` kullanıcıya yansıyordu
-5. Tekil tool retry yoktu
+voice, HUD, Cursor, ToolRegistry, SQLite, permissions/audit, CommandRouter (NL→tools), DecisionEngine (Cursor policy).
 
-## 4–6. Stability / Security / Performance
+## 5. Production
 
-- Tek worker lock; plan retry vardı, tool retry yoktu → **Phase 1 tool retry**
-- `auto_approve_dangerous: false` (bu repo); shell `full_shell_access: true`
-- Fast miss → Cursor maliyeti yüksek; action intents artık önce local
+`GET /api/health` · `docs/PRODUCTION.md` · GitHub Actions CI · safe autonomy (`auto_approve_dangerous: false`).
 
-## 7–9. AI / Tools / Memory
-
-- Tek provider: Cursor; model router keyword
-- Tools: registry + permission 0–3 + audit
-- Memory: SQLite + FTS + hashing embeddings
-
-## 10. Proposed Direction
-
-Incremental: Stability → Orchestrator → Tools → Tasks → Memory → Model Router → Verify → UI → Voice → Automation → Security → Tests → Perf → Production.
-
-## 11. KEEP / REFACTOR / REPLACE / REMOVE
-
-| KEEP | REFACTOR | REPLACE (behavior) |
-|------|----------|-------------------|
-| voice, HUD, Cursor | main.py / router | Popen success claim |
-| ToolRegistry, SQLite | open_app pipeline | raw "Could not open" speech |
-| permissions/audit | task state machine | stale workspace |
-
-## 12–15. Migration / Testing / Production / Roadmap
-
-Detay: `docs/ROADMAP.md`. Phase 1 kabul: open resolve+retry, recovery speech, workspace guard, action miss → legacy, unittest yeşil.
+Detay: `docs/ROADMAP.md`.

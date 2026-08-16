@@ -11,6 +11,7 @@ from brain.llm_provider import CursorProvider, build_default_router
 from core.backup import BackupService
 from core.command_router import CommandRouter
 from core.context_manager import ContextManager, SessionContext
+from core.decision import DecisionEngine
 from core.diagnostics import SelfDiagnostics
 from core.event_bus import EventBus
 from core.execution_engine import ExecutionEngine, ExecutionRequest
@@ -195,6 +196,7 @@ class JarvisOS:
             tasks=self.tasks,
         )
         self.router = CommandRouter()
+        self.decision = DecisionEngine()
         self.diagnostics = SelfDiagnostics(self)
         self.recall_limit = int(j2.get("memory_recall_limit", 4))
         self.recall_max_chars = int(j2.get("memory_recall_max_chars", 400))
@@ -205,6 +207,7 @@ class JarvisOS:
         self._last_turn = None
         self._last_complexity = None
         self._last_request_id = None
+        self._last_decision = None
         self.bus.publish(
             "os.ready",
             {
@@ -308,28 +311,20 @@ class JarvisOS:
         legacy_fn: Optional[Callable[[str], Optional[str]]] = None,
         request_id: Optional[str] = None,
     ) -> "TurnResult":
-        """Single OS entry for one user turn (Phase 2).
+        """Single OS entry for one user turn (Phase 2 + O-04 DecisionEngine).
 
         CHAT/SIMPLE never set allow_cursor. Tool/meta/legacy run first.
         """
-        from core.complexity import (
-            TaskComplexity,
-            allows_cursor,
-            classify_task_complexity,
-            local_fallback_speech,
-        )
-        from core.request_context import (
-            clear_request_id,
-            set_brain_path,
-            set_request_id,
-        )
+        from core.request_context import set_brain_path, set_request_id
         from core.turn_result import TurnResult
 
         rid = set_request_id(request_id)
-        complexity = classify_task_complexity(command)
-        cursor_ok = allows_cursor(complexity)
+        decision = self.decision.decide(command)
+        complexity = decision.complexity
+        cursor_ok = decision.allow_cursor
         self._last_complexity = complexity
         self._last_request_id = rid
+        self._last_decision = decision
 
         def _done(
             speech: Optional[str],
@@ -362,6 +357,7 @@ class JarvisOS:
                         "brain_path": brain_path,
                         "allow_cursor": result.allow_cursor,
                         "reason": reason,
+                        "decision_path": decision.preferred_path.value,
                         "command": (command or "")[:120],
                     },
                 )
@@ -405,36 +401,20 @@ class JarvisOS:
                 if legacy:
                     return _done(legacy, brain_path="legacy", reason="legacy")
 
-            # 4) Cursor gate — degraded mode blocks Cursor (local tools still work)
-            from core.degraded import get_degraded_mode
-
-            if not get_degraded_mode().allow_cursor():
-                speech = local_fallback_speech(complexity, command)
-                if not speech:
-                    speech = (
-                        "I'm in offline mode — local tools only. "
-                        "Try a direct command, or restore the model connection."
-                    )
-                return _done(
-                    speech,
-                    brain_path="degraded",
-                    reason="degraded_mode",
-                    allow=False,
-                )
-
+            # 4) DecisionEngine Cursor gate (degraded + CHAT/SIMPLE)
             if not cursor_ok:
-                speech = local_fallback_speech(complexity, command)
+                speech = self.decision.fallback_speech(decision, command)
                 return _done(
                     speech,
-                    brain_path="blocked",
-                    reason=f"gate:{complexity.value}",
+                    brain_path=decision.preferred_path.value,
+                    reason=decision.reason,
                     allow=False,
                 )
 
             return _done(
                 None,
                 brain_path="deep",
-                reason=f"cursor_fallback:{complexity.value}",
+                reason=decision.reason,
                 allow=True,
             )
         except Exception as err:

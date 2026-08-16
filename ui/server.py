@@ -48,6 +48,7 @@ class JarvisUI:
         self.health_provider = health_provider
         self.on_confirm = on_confirm
         self.on_mic_control: Optional[Callable[[bool, bool], None]] = None
+        self.on_desktop_confirm: Optional[Callable[[dict[str, Any]], None]] = None
         self._mic_enabled = True
         self._clients: set[web.WebSocketResponse] = set()
         self._command_queue: queue.Queue[str] = queue.Queue()
@@ -235,6 +236,12 @@ class JarvisUI:
 
     def send_confirm_request(self, payload: dict[str, Any]) -> None:
         self._emit({"type": "confirm_request", "data": payload})
+        # Desktop native window focus (U-04) — no-op in browser-only mode
+        if self.on_desktop_confirm:
+            try:
+                self.on_desktop_confirm(payload)
+            except Exception:
+                pass
 
     def send_plan_progress(self, payload: dict[str, Any]) -> None:
         """Stream plan step progress to HUD clients (U-01)."""

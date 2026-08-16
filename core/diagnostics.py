@@ -57,6 +57,7 @@ class SelfDiagnostics:
             "degraded": degraded,
             "passed": ok_count,
             "total": len(items),
+            "version": _version_payload(),
             "checks": [
                 {"name": i.name, "ok": i.ok, "detail": i.detail, "meta": i.meta}
                 for i in items
@@ -280,3 +281,12 @@ class SelfDiagnostics:
             )
         detail = f"runtime={status.get('runtime')} connected={connected}/{status.get('configured')}"
         return DiagnosticResult("mcp", True, detail, status)
+
+
+def _version_payload() -> dict[str, str]:
+    try:
+        from core.version import version_info
+
+        return version_info()
+    except Exception:
+        return {"version": "unknown"}

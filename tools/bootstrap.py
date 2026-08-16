@@ -18,6 +18,7 @@ from tools.browser_tools import (
     BrowserClickTool,
     BrowserFillFormTool,
     BrowserGetPageTextTool,
+    BrowserNavigateTool,
     BrowserOpenUrlTool,
     BrowserSearchTool,
 )
@@ -91,6 +92,7 @@ def register_phase3_tools(
         FsMoveTool(wd),
         DiagnosticsHealthTool(health_fn),
         BrowserOpenUrlTool(),
+        BrowserNavigateTool(),
         BrowserSearchTool(),
         BrowserGetPageTextTool(),
         BrowserFillFormTool(),

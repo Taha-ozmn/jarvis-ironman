@@ -78,6 +78,6 @@ class StubTool(BaseTool):
     def run(self, arguments: dict[str, Any]) -> ToolResult:
         return ToolResult(
             ok=False,
-            error=f"Tool '{self.name}' is a stub — not implemented yet (Phase 3+)",
+            error=f"Tool '{self.name}' is a stub — not implemented in this registry",
             data={"received": arguments},
         )

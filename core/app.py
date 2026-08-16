@@ -190,6 +190,9 @@ class JarvisOS:
         self.recall_max_chars = int(j2.get("memory_recall_max_chars", 400))
         self.proactive_enabled = bool(proactive_cfg.get("enabled", True))
         self._ready = True
+        self._last_turn = None
+        self._last_complexity = None
+        self._last_request_id = None
         self.bus.publish(
             "os.ready",
             {
@@ -269,6 +272,142 @@ class JarvisOS:
             self._ensure_default_briefing_automation()
         except Exception:
             logger.exception("Failed to start automation scheduler")
+
+    def handle_turn(
+        self,
+        command: str,
+        *,
+        meta_fn: Optional[Callable[[str], Optional[str]]] = None,
+        quick_fn: Optional[Callable[[str], Optional[str]]] = None,
+        legacy_fn: Optional[Callable[[str], Optional[str]]] = None,
+        request_id: Optional[str] = None,
+    ) -> "TurnResult":
+        """Single OS entry for one user turn (Phase 2).
+
+        CHAT/SIMPLE never set allow_cursor. Tool/meta/legacy run first.
+        """
+        from core.complexity import (
+            TaskComplexity,
+            allows_cursor,
+            classify_task_complexity,
+            local_fallback_speech,
+        )
+        from core.request_context import (
+            clear_request_id,
+            set_brain_path,
+            set_request_id,
+        )
+        from core.turn_result import TurnResult
+
+        rid = set_request_id(request_id)
+        complexity = classify_task_complexity(command)
+        cursor_ok = allows_cursor(complexity)
+        self._last_complexity = complexity
+        self._last_request_id = rid
+
+        def _done(
+            speech: Optional[str],
+            *,
+            brain_path: str,
+            reason: str,
+            allow: Optional[bool] = None,
+        ) -> TurnResult:
+            allow_c = cursor_ok if allow is None else allow
+            # If we already have speech, Cursor is not needed
+            if speech is not None:
+                allow_c = False
+            set_brain_path(brain_path)
+            result = TurnResult(
+                speech=speech,
+                allow_cursor=allow_c and speech is None,
+                complexity=complexity,
+                request_id=rid,
+                brain_path=brain_path,
+                reason=reason,
+            )
+            self._last_turn = result
+            try:
+                self.audit.write(
+                    action="turn.classified",
+                    level=0,
+                    success=True,
+                    details={
+                        "complexity": complexity.value,
+                        "brain_path": brain_path,
+                        "allow_cursor": result.allow_cursor,
+                        "reason": reason,
+                        "command": (command or "")[:120],
+                    },
+                )
+            except Exception:
+                logger.exception("turn audit failed")
+            return result
+
+        try:
+            # 1) Fast tools
+            tool_speech = self.try_handle_command(command)
+            if tool_speech is not None:
+                return _done(tool_speech, brain_path="fast", reason="tool")
+
+            # 2) Meta / quick (voice preferences, greetings)
+            if meta_fn is not None:
+                try:
+                    meta = meta_fn(command)
+                except Exception as err:
+                    logger.exception("meta_fn failed")
+                    meta = None
+                    del err
+                if meta:
+                    return _done(meta, brain_path="meta", reason="meta")
+
+            if quick_fn is not None:
+                try:
+                    quick = quick_fn(command)
+                except Exception:
+                    logger.exception("quick_fn failed")
+                    quick = None
+                if quick:
+                    return _done(quick, brain_path="meta", reason="quick")
+
+            # 3) Legacy macOS heuristics for action-like misses
+            if legacy_fn is not None:
+                try:
+                    legacy = legacy_fn(command)
+                except Exception:
+                    logger.exception("legacy_fn failed")
+                    legacy = None
+                if legacy:
+                    return _done(legacy, brain_path="legacy", reason="legacy")
+
+            # 4) Cursor gate
+            if not cursor_ok:
+                speech = local_fallback_speech(complexity, command)
+                return _done(
+                    speech,
+                    brain_path="blocked",
+                    reason=f"gate:{complexity.value}",
+                    allow=False,
+                )
+
+            return _done(
+                None,
+                brain_path="deep",
+                reason=f"cursor_fallback:{complexity.value}",
+                allow=True,
+            )
+        except Exception as err:
+            logger.exception("handle_turn failed")
+            from core.recovery import user_safe_speech
+
+            return _done(
+                user_safe_speech(str(err)),
+                brain_path="blocked",
+                reason="error",
+                allow=False,
+            )
+        finally:
+            # Keep request_id for nested audit during the turn; clearer clears in main
+            pass
 
     def try_handle_command(self, command: str) -> Optional[str]:
         """Route NL command through tools; None = fall through to brain/legacy.

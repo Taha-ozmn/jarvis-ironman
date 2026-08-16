@@ -547,46 +547,72 @@ class JarvisCore:
         if not command.strip():
             return "I didn't catch that."
 
+        from core.request_context import clear_request_id, set_request_id
+        from core.turn_result import TurnResult
+
+        rid = set_request_id(None)
+        self._active_request_id = rid
+        self._last_turn_result: Optional[TurnResult] = None
+
         # Level-3 voice confirm — only when gate is waiting (interactive)
         confirm_reply = self._try_voice_confirmation(command)
         if confirm_reply is not None:
+            clear_request_id()
             return confirm_reply
 
         stop = self.try_stop_speech(command)
         if stop is not None:
+            clear_request_id()
             return stop
 
         shutdown = self.system.try_shutdown(command)
         if shutdown == "SHUTDOWN_JARVIS":
+            clear_request_id()
             return shutdown
 
         listen = self.try_listen_control(command)
         if listen:
+            clear_request_id()
             return listen
 
-        # JARVIS 2.0 tool path — works even when ai_only is on
-        tool_reply = self._try_jarvis2_tools(command)
-        if tool_reply is not None:
-            return tool_reply
+        # Phase 2: single OS entry — tools → meta → legacy → Cursor gate
+        if self.os_v2 is not None:
+            turn = self.os_v2.handle_turn(
+                command,
+                meta_fn=self.try_local_meta,
+                quick_fn=self._quick_reply,
+                legacy_fn=self._try_legacy_actions,
+                request_id=rid,
+            )
+            self._last_turn_result = turn
+            print(
+                f"🧭 Turn [{turn.request_id}] {turn.complexity.value} "
+                f"→ {turn.brain_path} ({turn.reason})"
+            )
+            if turn.speech is not None:
+                return turn.speech
+            if turn.allow_cursor:
+                return None
+            # Gated — should already have speech; belt-and-suspenders
+            from core.complexity import local_fallback_speech
 
-        # Instant meta — always before slow Cursor brain
+            return local_fallback_speech(turn.complexity, command)
+
+        # Core disabled — legacy path
+        diag = self._try_jarvis2_diagnostics(command)
+        if diag is not None:
+            return diag
         meta = self.try_local_meta(command)
         if meta:
             return meta
-
         quick_reply = self._quick_reply(command)
         if quick_reply:
             return quick_reply
-
-        # Action intents must execute locally — never chat-only via Cursor
         legacy = self._try_legacy_actions(command)
         if legacy is not None:
-            print(f"⚙️  Legacy eylem: {legacy}")
             return legacy
-
         if self.ai_only:
             return None
-
         return None
 
     def _try_legacy_actions(self, command: str) -> Optional[str]:
@@ -689,30 +715,44 @@ class JarvisCore:
             else:
                 response = self.process_command(command)
                 if response is None:
-                    if self.speak_ack:
-                        ack = self.narrator.instant_ack(command)
-                        self._jarvis_speak(ack)
-                        self._set_status("thinking", ack)
+                    turn = getattr(self, "_last_turn_result", None)
+                    # Phase 2 gate: CHAT/SIMPLE must never reach Cursor
+                    if turn is not None and not turn.allow_cursor:
+                        from core.complexity import local_fallback_speech
+
+                        response = local_fallback_speech(
+                            turn.complexity, command,
+                        )
+                        self._emit_response(command, response)
+                        self.speaker.say(response)
                     else:
-                        self._set_status("thinking", "Processing…")
-                    if not self.brain.is_ready():
-                        self._set_status("thinking", "Neural core connecting…")
-                        self.brain.wait_ready(timeout=120)
-                    response = self.brain.think_with_narration(
-                        command,
-                        self._jarvis_speak,
-                        work_update=self.narrator.work_update,
-                        on_complete=lambda result: self._on_task_complete(
-                            command, result,
-                        ),
-                    )
-                    if response and response not in (
-                        "That took longer than expected — shall I keep trying, sir?",
-                    ):
-                        self.brain.remember_turn(command, response)
-                        if self.os_v2 is not None:
-                            self.os_v2.ingest_conversation(command, response)
-                    self._emit_response(command, response)
+                        if self.speak_ack:
+                            ack = self.narrator.instant_ack(command)
+                            self._jarvis_speak(ack)
+                            self._set_status("thinking", ack)
+                        else:
+                            self._set_status("thinking", "Processing…")
+                        if not self.brain.is_ready():
+                            self._set_status("thinking", "Neural core connecting…")
+                            self.brain.wait_ready(timeout=120)
+                        print(
+                            f"💬 DeepBrain (Cursor) [{getattr(self, '_active_request_id', '')}]"
+                        )
+                        response = self.brain.think_with_narration(
+                            command,
+                            self._jarvis_speak,
+                            work_update=self.narrator.work_update,
+                            on_complete=lambda result: self._on_task_complete(
+                                command, result,
+                            ),
+                        )
+                        if response and response not in (
+                            "That took longer than expected — shall I keep trying, sir?",
+                        ):
+                            self.brain.remember_turn(command, response)
+                            if self.os_v2 is not None:
+                                self.os_v2.ingest_conversation(command, response)
+                        self._emit_response(command, response)
                 elif response == "SHUTDOWN_JARVIS":
                     self.speaker.say("Powering down.")
                     print("🤖 JARVIS: Powering down.\n")
@@ -729,6 +769,12 @@ class JarvisCore:
             self._emit_response(command, response)
             self.speaker.say(response)
         finally:
+            try:
+                from core.request_context import clear_request_id
+
+                clear_request_id()
+            except Exception:
+                pass
             self._processing.release()
 
         if response == "SHUTDOWN_JARVIS":
@@ -933,11 +979,23 @@ class JarvisCore:
                     continue
                 response = self.process_command(user_input)
                 if response is None:
-                    response = self.brain.think_with_narration(
-                        user_input, self.speaker.say, self.narrator.work_update,
-                    )
+                    turn = getattr(self, "_last_turn_result", None)
+                    if turn is not None and not turn.allow_cursor:
+                        from core.complexity import local_fallback_speech
+
+                        response = local_fallback_speech(turn.complexity, user_input)
+                    else:
+                        response = self.brain.think_with_narration(
+                            user_input, self.speaker.say, self.narrator.work_update,
+                        )
                 print(f"JARVIS: {response}\n")
                 self.speaker.say(response)
+                try:
+                    from core.request_context import clear_request_id
+
+                    clear_request_id()
+                except Exception:
+                    pass
             except (KeyboardInterrupt, EOFError):
                 break
 

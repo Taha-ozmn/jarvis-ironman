@@ -115,12 +115,20 @@ def extract_open_target(text: str) -> Optional[str]:
 
 def looks_like_action(command: str) -> bool:
     """True when utterance should stay on local tools, not chat-only Cursor."""
+    import re
+
     lower = (command or "").lower()
-    verbs = (
-        "aç", "ac", "open", "launch", "başlat", "baslat",
-        "kapat", "kapa", "close", "quit",
+    # Multi-char / spaced phrases — substring OK
+    phrases = (
+        "open", "launch", "başlat", "baslat",
+        "close", "quit", "kapat", "kapa",
         "çalıştır", "calistir", "run ", "execute",
-        "ara ", "search", "google",
+        "search", "google", "ara ",
         "kaydet", "hatırlat", "hatirlat", "göster", "goster",
     )
-    return any(v in lower for v in verbs)
+    if any(p in lower for p in phrases):
+        return True
+    # Short TR verbs need word boundaries ("ac" must not match "kısaca")
+    return bool(
+        re.search(r"(?<!\w)(?:aç|ac)(?!\w)", lower)
+    )

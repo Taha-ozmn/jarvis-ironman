@@ -69,6 +69,19 @@ class ModelRouter:
         return "chat"
 
     def pick(self, category: str) -> str:
+        # Degraded / offline: always cheap local-routing default (never deep)
+        try:
+            from core.degraded import get_degraded_mode
+
+            if get_degraded_mode().active:
+                raw = (
+                    self.models.get("chat")
+                    or self.models.get("default")
+                    or self.default
+                )
+                return self._resolve(raw)
+        except Exception:
+            pass
         if self.manual_override:
             return self._resolve(self.manual_override)
         if self.manual_category:
@@ -76,6 +89,17 @@ class ModelRouter:
             return self._resolve(raw)
         raw = self.models.get(category) or self.models.get("default") or self.default
         return self._resolve(raw)
+
+    def pick_for_complexity(self, complexity: str) -> str:
+        """Map OS complexity → cheap vs smart model (Phase 6)."""
+        key = (complexity or "").lower().strip()
+        if key in ("chat", "simple"):
+            return self.pick("chat")
+        if key in ("complex", "autonomous"):
+            return self.pick("complex") if "complex" in self.models else self.pick("deep")
+        if key == "medium":
+            return self.pick("search") if "search" in self.models else self.pick("default")
+        return self.pick("default")
 
     def set_manual(self, model_or_alias: str) -> str:
         key = model_or_alias.lower().strip()

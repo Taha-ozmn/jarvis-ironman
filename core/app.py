@@ -11,6 +11,7 @@ from brain.llm_provider import CursorProvider, build_default_router
 from core.backup import BackupService
 from core.command_router import CommandRouter
 from core.context_manager import ContextManager, SessionContext
+from core.decision import DecisionEngine
 from core.diagnostics import SelfDiagnostics
 from core.event_bus import EventBus
 from core.execution_engine import ExecutionEngine, ExecutionRequest
@@ -137,6 +138,7 @@ class JarvisOS:
         self.mcp = MCPAdapter()
         self.planner = Planner(llm_refine=make_llm_refine(self.llm))
         max_retries = int(j2.get("plan_max_retries", 1))
+        tool_max_retries = int(j2.get("tool_max_retries", 3))
 
         self.tools = ToolRegistry()
         register_phase3_tools(
@@ -153,6 +155,16 @@ class JarvisOS:
             plan_runner=self._run_plan_goal,
             llm=self.llm,
         )
+        # Optional plugins (Phase 3) — failures isolated
+        try:
+            from tools.packages import load_plugins
+
+            load_plugins(
+                self.tools,
+                {"root": str(self.root), "config": self.config},
+            )
+        except Exception:
+            logger.exception("plugin load failed (isolated)")
         # Live MCP — connect configured servers after local tools exist
         mcp_cfg = j2.get("mcp") or {}
         if bool(mcp_cfg.get("enabled", True)):
@@ -179,15 +191,23 @@ class JarvisOS:
             self.confirmation,
             on_level_notify=self._on_level_notify,
             max_retries=max_retries,
+            tool_max_retries=tool_max_retries,
             working_dir=self.projects.working_dir,
             tasks=self.tasks,
         )
         self.router = CommandRouter()
+        self.decision = DecisionEngine()
         self.diagnostics = SelfDiagnostics(self)
         self.recall_limit = int(j2.get("memory_recall_limit", 4))
         self.recall_max_chars = int(j2.get("memory_recall_max_chars", 400))
         self.proactive_enabled = bool(proactive_cfg.get("enabled", True))
+        self.plan_speech_min_interval = float(j2.get("plan_speech_min_interval", 8.0))
+        self._last_plan_speech_at: float = 0.0
         self._ready = True
+        self._last_turn = None
+        self._last_complexity = None
+        self._last_request_id = None
+        self._last_decision = None
         self.bus.publish(
             "os.ready",
             {
@@ -263,10 +283,153 @@ class JarvisOS:
     def start_background(self) -> None:
         """Start automation scheduler (daemon). Safe if already started."""
         try:
+            self._load_automation_packs()
             self.automation.start()
             self._ensure_default_briefing_automation()
         except Exception:
             logger.exception("Failed to start automation scheduler")
+
+    def _load_automation_packs(self) -> None:
+        j2 = self.config.get("jarvis2", {})
+        packs_rel = j2.get("automation_packs_dir", "config/automation_packs")
+        packs_dir = (self.root / str(packs_rel)).resolve()
+        try:
+            from automation.packs import load_automation_packs
+
+            loaded = load_automation_packs(self.automation, packs_dir)
+            if loaded:
+                logger.info("automation packs loaded: %s", ", ".join(loaded))
+        except Exception:
+            logger.exception("automation pack load failed (isolated)")
+
+    def handle_turn(
+        self,
+        command: str,
+        *,
+        meta_fn: Optional[Callable[[str], Optional[str]]] = None,
+        quick_fn: Optional[Callable[[str], Optional[str]]] = None,
+        legacy_fn: Optional[Callable[[str], Optional[str]]] = None,
+        request_id: Optional[str] = None,
+    ) -> "TurnResult":
+        """Single OS entry for one user turn (Phase 2 + O-04 DecisionEngine).
+
+        CHAT/SIMPLE never set allow_cursor. Tool/meta/legacy run first.
+        """
+        from core.request_context import set_brain_path, set_request_id
+        from core.turn_result import TurnResult
+
+        rid = set_request_id(request_id)
+        decision = self.decision.decide(command)
+        complexity = decision.complexity
+        cursor_ok = decision.allow_cursor
+        self._last_complexity = complexity
+        self._last_request_id = rid
+        self._last_decision = decision
+
+        def _done(
+            speech: Optional[str],
+            *,
+            brain_path: str,
+            reason: str,
+            allow: Optional[bool] = None,
+        ) -> TurnResult:
+            allow_c = cursor_ok if allow is None else allow
+            # If we already have speech, Cursor is not needed
+            if speech is not None:
+                allow_c = False
+            set_brain_path(brain_path)
+            result = TurnResult(
+                speech=speech,
+                allow_cursor=allow_c and speech is None,
+                complexity=complexity,
+                request_id=rid,
+                brain_path=brain_path,
+                reason=reason,
+            )
+            self._last_turn = result
+            try:
+                self.audit.write(
+                    action="turn.classified",
+                    level=0,
+                    success=True,
+                    details={
+                        "complexity": complexity.value,
+                        "brain_path": brain_path,
+                        "allow_cursor": result.allow_cursor,
+                        "reason": reason,
+                        "decision_path": decision.preferred_path.value,
+                        "command": (command or "")[:120],
+                    },
+                )
+            except Exception:
+                logger.exception("turn audit failed")
+            return result
+
+        try:
+            # 1) Fast tools
+            tool_speech = self.try_handle_command(command)
+            if tool_speech is not None:
+                return _done(tool_speech, brain_path="fast", reason="tool")
+
+            # 2) Meta / quick (voice preferences, greetings)
+            if meta_fn is not None:
+                try:
+                    meta = meta_fn(command)
+                except Exception as err:
+                    logger.exception("meta_fn failed")
+                    meta = None
+                    del err
+                if meta:
+                    return _done(meta, brain_path="meta", reason="meta")
+
+            if quick_fn is not None:
+                try:
+                    quick = quick_fn(command)
+                except Exception:
+                    logger.exception("quick_fn failed")
+                    quick = None
+                if quick:
+                    return _done(quick, brain_path="meta", reason="quick")
+
+            # 3) Legacy macOS heuristics for action-like misses
+            if legacy_fn is not None:
+                try:
+                    legacy = legacy_fn(command)
+                except Exception:
+                    logger.exception("legacy_fn failed")
+                    legacy = None
+                if legacy:
+                    return _done(legacy, brain_path="legacy", reason="legacy")
+
+            # 4) DecisionEngine Cursor gate (degraded + CHAT/SIMPLE)
+            if not cursor_ok:
+                speech = self.decision.fallback_speech(decision, command)
+                return _done(
+                    speech,
+                    brain_path=decision.preferred_path.value,
+                    reason=decision.reason,
+                    allow=False,
+                )
+
+            return _done(
+                None,
+                brain_path="deep",
+                reason=decision.reason,
+                allow=True,
+            )
+        except Exception as err:
+            logger.exception("handle_turn failed")
+            from core.recovery import user_safe_speech
+
+            return _done(
+                user_safe_speech(str(err)),
+                brain_path="blocked",
+                reason="error",
+                allow=False,
+            )
+        finally:
+            # Keep request_id for nested audit during the turn; clearer clears in main
+            pass
 
     def try_handle_command(self, command: str) -> Optional[str]:
         """Route NL command through tools; None = fall through to brain/legacy.
@@ -292,12 +455,21 @@ class JarvisOS:
                     else "Done."
                 )
             else:
-                speech = (result.error or "That didn't work.").strip()
+                from voice.speech_clean import speak_safe
+
+                speech = speak_safe(
+                    (result.error or "That didn't work.").strip(),
+                    language=str(
+                        self.config.get("jarvis", {}).get("language", "en-GB")
+                    ),
+                )
             self.context.record_turn(resolved, speech)
             return speech
         except Exception as err:
             logger.exception("try_handle_command failed")
-            return f"Something went wrong: {err}"
+            from core.recovery import user_safe_speech
+
+            return user_safe_speech(str(err))
 
     def _run_plan_goal(self, goal: str, *, background: bool = False) -> str:
         plan = self.planner.create(goal)
@@ -309,11 +481,7 @@ class JarvisOS:
             )
         if background or len(plan.steps) >= 4:
             def _done(result: Any) -> None:
-                if self._speak and result.speech:
-                    try:
-                        self._speak(result.speech[:280])
-                    except Exception:
-                        logger.exception("plan background speak failed")
+                self._speak_plan_result(result)
 
             msg = self.execution.execute_plan_background(plan, on_done=_done)
             preview = plan.summary(max_chars=160)
@@ -321,44 +489,86 @@ class JarvisOS:
         result = self.execution.execute_plan(plan)
         return result.speech
 
+    def _speak_plan_result(self, result: Any) -> None:
+        """Background plan completion speech — throttled short summary (P-02)."""
+        import time
+
+        if not self._speak:
+            return
+        now = time.time()
+        if now - self._last_plan_speech_at < self.plan_speech_min_interval:
+            logger.info("plan speech throttled (%.1fs gap)", self.plan_speech_min_interval)
+            return
+        self._last_plan_speech_at = now
+        ok = bool(getattr(result, "ok", False))
+        completed = int(getattr(result, "completed", 0) or 0)
+        total = int(getattr(result, "total", 0) or 0)
+        if ok:
+            text = f"Plan complete — {completed}/{total} steps."
+        else:
+            reason = str(getattr(result, "stopped_reason", "") or "stopped")[:120]
+            text = f"Plan stopped at {completed}/{total}: {reason}"
+        try:
+            self._speak(text[:200])
+        except Exception:
+            logger.exception("plan background speak failed")
+
     def recall_for_prompt(self, query: str) -> str:
-        """Relevant long-term memories for LLM context — not a full dump."""
+        """Relevant long-term memories for LLM context — hybrid rank, not a dump."""
+        from memory.retrieval import format_recall_block, hybrid_retrieve, temporal_query_hours
+
         q = (query or "").strip()
         if not q:
             return ""
-        seen: set[int] = set()
-        hits = []
-        # Semantic first
         try:
-            for mem in self.memory.search_semantic(q, limit=self.recall_limit):
-                if mem.id in seen:
-                    continue
-                seen.add(mem.id)
-                hits.append(mem)
+            ranked = hybrid_retrieve(
+                self.memory,
+                q,
+                limit=self.recall_limit,
+                since_hours=temporal_query_hours(q),
+            )
+            return format_recall_block(ranked, max_chars=self.recall_max_chars)
         except Exception:
-            logger.exception("semantic recall failed — FTS fallback")
-        if len(hits) < self.recall_limit:
-            tokens = [t for t in re_split_tokens(q) if len(t) > 2][:6]
-            for token in tokens or [q[:40]]:
-                for mem in self.memory.search(token, limit=self.recall_limit):
-                    if mem.id in seen:
-                        continue
-                    seen.add(mem.id)
-                    hits.append(mem)
-                    if len(hits) >= self.recall_limit:
-                        break
-                if len(hits) >= self.recall_limit:
-                    break
-        if not hits:
+            logger.exception("hybrid recall failed — empty context")
             return ""
-        lines = ["[LONG-TERM MEMORY — use only if relevant]"]
-        for mem in hits[: self.recall_limit]:
-            cat = mem.category or "general"
-            lines.append(f"- ({cat}) {mem.content}")
-        block = "\n".join(lines)
-        if len(block) > self.recall_max_chars:
-            block = block[: self.recall_max_chars].rsplit("\n", 1)[0] + "\n- …"
-        return block
+
+    def cancel_active_plan(self, reason: str = "user_cancel") -> bool:
+        """Cancel in-flight plan (voice «dur» / stop)."""
+        try:
+            return bool(self.execution.cancel_active_plan(reason))
+        except Exception:
+            logger.exception("cancel_active_plan failed")
+            return False
+
+    def resume_paused_plan(self) -> Optional[str]:
+        """Resume a plan paused for Level-3 confirmation."""
+        try:
+            result = self.execution.resume_paused_plan()
+        except Exception:
+            logger.exception("resume_paused_plan failed")
+            return None
+        if result is None:
+            return None
+        return result.speech
+
+    def enter_degraded_mode(self, reason: str = "model_unavailable") -> None:
+        from core.degraded import get_degraded_mode
+
+        get_degraded_mode().enter(reason)
+        try:
+            self.audit.write(
+                action="mode.degraded",
+                level=0,
+                success=True,
+                details={"reason": reason},
+            )
+        except Exception:
+            pass
+
+    def exit_degraded_mode(self) -> None:
+        from core.degraded import get_degraded_mode
+
+        get_degraded_mode().exit()
 
     def ingest_conversation(self, user_text: str, assistant_text: str = "") -> list[int]:
         """Extract and store safe memories from a turn."""

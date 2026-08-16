@@ -25,9 +25,11 @@ class TaskManagerTests(unittest.TestCase):
         task = self.tasks.create("Build JARVIS 2.0", description="Foundation", priority=3)
         self.assertEqual(task.status, "pending")
         updated = self.tasks.update(task.id, status="in_progress")
-        self.assertEqual(updated.status, "in_progress")
+        # Legacy alias in_progress → running (Phase 4 state machine)
+        self.assertEqual(updated.status, "running")
         listed = self.tasks.list(status="in_progress")
         self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0].status, "running")
         self.tasks.delete(task.id)
         self.assertEqual(self.tasks.list(), [])
 

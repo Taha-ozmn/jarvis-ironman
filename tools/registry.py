@@ -64,35 +64,38 @@ class ToolRegistry:
 
 
 def register_builtin_stubs(registry: ToolRegistry) -> None:
-    """Lightweight stubs for unit tests / discovery. Prefer register_phase3_tools in app."""
+    """Lightweight stubs for unit tests / discovery only.
+
+    Production registers real tools via ``register_phase3_tools``.
+    """
     stubs = [
         StubTool(
             "memory.search",
-            "Search long-term memories (keyword)",
+            "Search long-term memories (keyword) — stub for tests",
             PermissionLevel.READ,
             {"query": {"type": "str", "required": True}},
         ),
         StubTool(
             "system.shell",
-            "Run a shell command",
+            "Run a shell command — stub for tests",
             PermissionLevel.SYSTEM,
             {"command": {"type": "str", "required": True}},
         ),
         StubTool(
             "browser.navigate",
-            "TODO: Playwright browser agent (Phase 4+)",
+            "Open URL (test stub; production uses browser.open_url)",
             PermissionLevel.SYSTEM,
             {"url": {"type": "str", "required": True}},
         ),
         StubTool(
             "automation.run",
-            "TODO: run automation rule (Phase 4)",
+            "Run automation rule (test stub; production AutomationRunTool)",
             PermissionLevel.SYSTEM,
             {"rule_id": {"type": "int", "required": True}},
         ),
         StubTool(
             "diagnostics.health",
-            "Report JARVIS 2.0 subsystem health",
+            "Report JARVIS 2.0 subsystem health — stub for tests",
             PermissionLevel.READ,
         ),
     ]

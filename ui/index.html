@@ -427,6 +427,20 @@
     }
     .perm-toast.visible { opacity: 1; }
     .perm-toast.level3 { border-color: var(--red); color: #ff8899; }
+    .listen-badge.auth {
+      border-color: rgba(255, 51, 68, 0.75);
+      color: #ff8899;
+      background: rgba(255, 51, 68, 0.12);
+      animation: auth-pulse 1.2s ease-in-out infinite;
+    }
+    .listen-badge.auth .listen-dot {
+      background: var(--red);
+      animation: pulse-g 0.8s ease-in-out infinite;
+    }
+    @keyframes auth-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(255, 51, 68, 0.25); }
+      50% { box-shadow: 0 0 12px 2px rgba(255, 51, 68, 0.35); }
+    }
     .confirm-overlay {
       position: fixed;
       inset: 0;
@@ -449,7 +463,17 @@
       font-size: 0.85rem;
       letter-spacing: 0.25em;
       color: var(--red);
+      margin-bottom: 0.35rem;
+    }
+    .confirm-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
       margin-bottom: 0.6rem;
+      font-family: var(--font-hud);
+      font-size: 0.62rem;
+      letter-spacing: 0.1em;
+      color: var(--amber);
     }
     .confirm-card p {
       color: #ffc8d0;
@@ -461,9 +485,9 @@
     .confirm-card .hint {
       opacity: 0.6;
       font-size: 0.7rem;
-      margin-bottom: 1rem;
+      margin-bottom: 0.5rem;
     }
-    .confirm-actions { display: flex; gap: 0.6rem; justify-content: flex-end; }
+    .confirm-actions { display: flex; gap: 0.6rem; justify-content: flex-end; margin-top: 0.6rem; }
     .confirm-actions button {
       font-family: var(--font-hud);
       font-size: 0.65rem;
@@ -475,6 +499,7 @@
     }
     .confirm-actions .deny { border-color: var(--red); color: var(--red); }
     .confirm-actions .approve { border-color: var(--green); color: var(--green); }
+    .confirm-actions .approve:focus { outline: 1px solid var(--green); }
 
     @keyframes pulse-g {
       0%, 100% { transform: scale(1); opacity: 1; }
@@ -501,15 +526,19 @@
   <div class="scanlines"></div>
   <div class="perm-toast" id="perm-toast"></div>
 
-  <div class="confirm-overlay" id="confirm-overlay">
+  <div class="confirm-overlay" id="confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
     <div class="confirm-card">
-      <h2>AUTHORIZATION REQUIRED</h2>
+      <h2 id="confirm-title">AUTHORIZATION REQUIRED</h2>
+      <div class="confirm-meta">
+        <span id="confirm-level">LEVEL 3</span>
+        <span id="confirm-timer">--s</span>
+      </div>
       <p id="confirm-action">—</p>
       <p class="hint" id="confirm-details"></p>
-      <p class="hint">Say “evet / yes” or “hayır / no” — or use the controls.</p>
+      <p class="hint">Voice: “evet / yes” · “hayır / no” · Keys: Enter authorize · Esc deny</p>
       <div class="confirm-actions">
-        <button type="button" class="deny" id="confirm-deny">DENY</button>
-        <button type="button" class="approve" id="confirm-approve">AUTHORIZE</button>
+        <button type="button" class="deny" id="confirm-deny">DENY (ESC)</button>
+        <button type="button" class="approve" id="confirm-approve">AUTHORIZE (ENTER)</button>
       </div>
     </div>
   </div>
@@ -543,6 +572,7 @@
       <div class="stat-row"><span class="stat-label">MAC OS</span><span class="stat-val ok" id="sub-macos">CONNECTED</span></div>
       <div class="stat-row"><span class="stat-label">CURSOR BRIDGE</span><span class="stat-val ok" id="sub-cursor">OK</span></div>
       <div class="stat-row"><span class="stat-label">MIC ARRAY</span><span class="stat-val ok" id="sub-mic">ACTIVE</span></div>
+      <div class="stat-row"><span class="stat-label">AUTH GATE</span><span class="stat-val ok" id="sub-auth">CLEAR</span></div>
       <div class="stat-row"><span class="stat-label">SANDBOX</span><span class="stat-val ok">DISABLED</span></div>
     </aside>
 
@@ -573,6 +603,7 @@
       <div class="cc-summary" id="cc-summary">CORE OFFLINE</div>
       <div class="cc-tabs" id="cc-tabs">
         <button type="button" class="cc-tab active" data-tab="tasks">TASKS</button>
+        <button type="button" class="cc-tab" data-tab="plan">PLAN</button>
         <button type="button" class="cc-tab" data-tab="memory">MEMORY</button>
         <button type="button" class="cc-tab" data-tab="projects">PROJECTS</button>
         <button type="button" class="cc-tab" data-tab="automations">AUTOMATIONS</button>
@@ -581,6 +612,7 @@
         <button type="button" class="cc-tab" data-tab="settings">SETTINGS</button>
       </div>
       <div class="cc-pane active" id="pane-tasks"></div>
+      <div class="cc-pane" id="pane-plan"></div>
       <div class="cc-pane" id="pane-memory"></div>
       <div class="cc-pane" id="pane-projects"></div>
       <div class="cc-pane" id="pane-automations"></div>
@@ -674,7 +706,11 @@
       document.getElementById('tel-disk').textContent = d.disk || '--';
       document.getElementById('tel-model').textContent = (d.model || '--').toUpperCase();
       document.getElementById('tel-status').textContent = d.systems || 'NOMINAL';
-      systemsStatus.textContent = 'SYSTEMS ' + (d.systems || 'NOMINAL');
+      if (!authPending) {
+        systemsStatus.textContent = userMicPaused
+          ? 'MIC PAUSED'
+          : ('SYSTEMS ' + (d.systems || 'NOMINAL'));
+      }
       if (d.neural) document.getElementById('sub-neural').textContent = d.neural;
       if (d.voice) document.getElementById('sub-voice').textContent = d.voice;
       if (d.macos) document.getElementById('sub-macos').textContent = d.macos;
@@ -686,25 +722,66 @@
     const confirmOverlay = document.getElementById('confirm-overlay');
     const confirmAction = document.getElementById('confirm-action');
     const confirmDetails = document.getElementById('confirm-details');
+    const confirmLevel = document.getElementById('confirm-level');
+    const confirmTimer = document.getElementById('confirm-timer');
+    const subAuth = document.getElementById('sub-auth');
+    let confirmDeadline = 0;
+    let confirmTimerId = null;
+    let authPending = false;
 
-    function showPermissionToast(level, tool, detail) {
-      permToast.textContent = `L${level} · ${tool}${detail ? ' · ' + detail : ''}`;
-      permToast.classList.toggle('level3', level >= 3);
-      permToast.classList.add('visible');
-      clearTimeout(showPermissionToast._t);
-      showPermissionToast._t = setTimeout(() => permToast.classList.remove('visible'), 4500);
+    function setAuthPending(pending) {
+      authPending = !!pending;
+      listenBadge.classList.toggle('auth', authPending);
+      if (subAuth) {
+        subAuth.textContent = authPending ? 'AWAITING' : 'CLEAR';
+        subAuth.className = 'stat-val ' + (authPending ? '' : 'ok');
+      }
+      const systems = document.getElementById('systems-status');
+      if (systems) {
+        if (authPending) systems.textContent = 'AWAITING AUTHORIZATION';
+        else if (userMicPaused) systems.textContent = 'MIC PAUSED';
+        else systems.textContent = 'SYSTEMS NOMINAL';
+      }
+      updateMicUI();
+    }
+
+    function tickConfirmTimer() {
+      if (!authPending || !confirmDeadline) return;
+      const left = Math.max(0, Math.ceil((confirmDeadline - Date.now()) / 1000));
+      if (confirmTimer) confirmTimer.textContent = left + 's';
+      if (left <= 0) {
+        // Server times out as deny; close UI so it does not stick
+        hideConfirmModal();
+      }
     }
 
     function showConfirmModal(payload) {
       pendingConfirmId = payload.id;
       confirmAction.textContent = payload.action || 'dangerous action';
       confirmDetails.textContent = payload.details || '';
+      if (confirmLevel) {
+        confirmLevel.textContent = 'LEVEL ' + (payload.level != null ? payload.level : 3);
+      }
+      const timeoutSec = Number(payload.timeout || payload.remaining || 60);
+      confirmDeadline = Date.now() + Math.max(1, timeoutSec) * 1000;
+      if (confirmTimerId) clearInterval(confirmTimerId);
+      tickConfirmTimer();
+      confirmTimerId = setInterval(tickConfirmTimer, 250);
       confirmOverlay.classList.add('visible');
+      setAuthPending(true);
+      const approveBtn = document.getElementById('confirm-approve');
+      if (approveBtn) approveBtn.focus();
     }
 
     function hideConfirmModal() {
       confirmOverlay.classList.remove('visible');
       pendingConfirmId = null;
+      confirmDeadline = 0;
+      if (confirmTimerId) {
+        clearInterval(confirmTimerId);
+        confirmTimerId = null;
+      }
+      setAuthPending(false);
     }
 
     function sendConfirm(approved) {
@@ -719,6 +796,49 @@
 
     document.getElementById('confirm-approve').addEventListener('click', () => sendConfirm(true));
     document.getElementById('confirm-deny').addEventListener('click', () => sendConfirm(false));
+    document.addEventListener('keydown', (e) => {
+      if (!authPending || !confirmOverlay.classList.contains('visible')) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        sendConfirm(false);
+      } else if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendConfirm(true);
+      }
+    });
+
+    function showPermissionToast(level, tool, detail) {
+      permToast.textContent = `L${level} · ${tool}${detail ? ' · ' + detail : ''}`;
+      permToast.classList.toggle('level3', level >= 3);
+      permToast.classList.add('visible');
+      clearTimeout(showPermissionToast._t);
+      showPermissionToast._t = setTimeout(() => permToast.classList.remove('visible'), 4500);
+    }
+
+    function updatePlanProgress(plan) {
+      if (!plan) return;
+      const step = plan.step || 0;
+      const total = plan.total || 0;
+      const tool = plan.tool || plan.description || '';
+      const phase = plan.phase || 'running';
+      const detail = total
+        ? `Plan ${step}/${total}${tool ? ' · ' + tool : ''} (${phase})`
+        : `Plan ${phase}`;
+      setStatus(
+        phase === 'failed' || phase === 'cancelled' ? 'error' : 'thinking',
+        detail,
+      );
+      const summary = document.getElementById('cc-summary');
+      if (summary && total) {
+        const bit = `PLAN <span>${step}/${total}</span> ${String(phase).toUpperCase()}` +
+          (tool ? ` <span>${tool}</span>` : '');
+        if (summary.innerHTML.includes('PLAN')) {
+          summary.innerHTML = summary.innerHTML.replace(/·\s*PLAN[\s\S]*$/, ' · ' + bit);
+        } else if (summary.textContent !== 'CORE OFFLINE') {
+          summary.innerHTML = summary.innerHTML + ' · ' + bit;
+        }
+      }
+    }
 
     document.querySelectorAll('.cc-tab').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -747,17 +867,32 @@
       }
       const s = data.summary || {};
       const cur = s.current_task ? `#${s.current_task.id} ${s.current_task.title}` : 'NONE';
+      const plan = data.plan_progress || s.plan_progress;
+      let planBit = '';
+      if (plan && plan.total) {
+        const phase = (plan.phase || 'running').toUpperCase();
+        planBit = ` · PLAN <span>${plan.step || 0}/${plan.total}</span> ${phase}`;
+        if (plan.tool) planBit += ` <span>${plan.tool}</span>`;
+      }
       summary.innerHTML =
         `TASK <span>${cur}</span> · OPEN <span>${s.open_tasks || 0}</span> · ` +
         `AUTO <span>${s.active_automations || 0}</span> · ` +
         `DIAG <span>${s.diagnostics_ok ? 'OK' : 'DEGRADED'}</span>` +
-        (s.pending_confirms ? ` · CONFIRM <span>${s.pending_confirms}</span>` : '');
+        (s.pending_confirms ? ` · CONFIRM <span>${s.pending_confirms}</span>` : '') +
+        planBit;
 
       renderList(document.getElementById('pane-tasks'), data.tasks, (t) =>
         t.error ? `<div class="cc-item">${t.error}</div>` :
         `<div class="cc-item"><strong>#${t.id}</strong> [${t.status}] ${t.title}` +
         `<div class="meta">priority ${t.priority}${t.due_at ? ' · due ' + t.due_at : ''}</div></div>`
       );
+      renderList(document.getElementById('pane-plan'), data.plan_timeline, (p) => {
+        if (!p || p.error) return `<div class="cc-item">${(p && p.error) || '—'}</div>`;
+        const step = p.step != null ? `${p.step}/${p.total || '?'}` : '';
+        const mark = p.ok === false ? '✗' : (p.phase === 'completed' || p.ok ? '✓' : '·');
+        return `<div class="cc-item">${mark} [${(p.phase || '').toUpperCase()}] ${step} ${p.tool || p.description || ''}` +
+          `<div class="meta">${(p.goal || p.description || '').toString().slice(0, 80)}</div></div>`;
+      });
       renderList(document.getElementById('pane-memory'), data.memory, (m) =>
         m.error ? `<div class="cc-item">${m.error}</div>` :
         `<div class="cc-item">${m.content}<div class="meta">${m.category || 'general'}</div></div>`
@@ -800,15 +935,24 @@
 
     function updateMicUI() {
       const subMic = document.getElementById('sub-mic');
-      listenBadge.classList.toggle('muted', userMicPaused);
-      listenBadge.classList.toggle('busy', processing && !userMicPaused);
-      if (userMicPaused) {
+      listenBadge.classList.toggle('muted', userMicPaused && !authPending);
+      listenBadge.classList.toggle('busy', processing && !userMicPaused && !authPending);
+      listenBadge.classList.toggle('auth', authPending);
+      if (authPending) {
+        listenLabel.textContent = 'AUTHORIZATION PENDING — YES / NO';
+        subMic.textContent = 'AUTH';
+        subMic.className = 'stat-val';
+        micToggleBtn.textContent = userMicPaused ? 'LISTEN' : 'MUTE MIC';
+        micToggleBtn.classList.toggle('muted', userMicPaused);
+      } else if (userMicPaused) {
         listenLabel.textContent = 'MIC PAUSED — SAY "LISTEN AGAIN"';
         subMic.textContent = 'STANDBY';
         subMic.className = 'stat-val';
         micToggleBtn.textContent = 'LISTEN';
         micToggleBtn.classList.add('muted');
         micToggleBtn.title = 'Resume microphone listening';
+        const systems = document.getElementById('systems-status');
+        if (systems && !authPending) systems.textContent = 'MIC PAUSED';
       } else if (nativeMic) {
         listenLabel.textContent = processing ? 'PROCESSING REQUEST' : 'NATIVE MIC ACTIVE';
         subMic.textContent = 'ACTIVE';
@@ -994,6 +1138,23 @@
         if (data.type === 'mic_state') setUserMicPaused(!data.enabled, { notifyServer: false });
         if (data.type === 'telemetry') updateTelemetry(data.data);
         if (data.type === 'command_center') updateCommandCenter(data.data);
+        if (data.type === 'plan_progress' && data.data) {
+          updatePlanProgress(data.data);
+          // Soft-refresh PLAN pane if we already have command-center data shape
+          const pane = document.getElementById('pane-plan');
+          if (pane && data.data.phase) {
+            const p = data.data;
+            const step = p.step != null ? `${p.step}/${p.total || '?'}` : '';
+            const mark = p.ok === false ? '✗' : (p.phase === 'completed' || p.ok ? '✓' : '·');
+            const row = document.createElement('div');
+            row.className = 'cc-item';
+            row.innerHTML = `${mark} [${(p.phase || '').toUpperCase()}] ${step} ${p.tool || p.description || ''}` +
+              `<div class="meta">${(p.goal || '').toString().slice(0, 80)}</div>`;
+            if (pane.querySelector('.cc-empty')) pane.innerHTML = '';
+            pane.prepend(row);
+            while (pane.children.length > 24) pane.removeChild(pane.lastChild);
+          }
+        }
         if (data.type === 'permission_notice') {
           showPermissionToast(data.level || 2, data.tool || 'tool', data.detail || '');
         }

@@ -134,7 +134,7 @@ def build_command_center(os_core: Any) -> dict[str, Any]:
 
     current_task = None
     for t in tasks:
-        if isinstance(t, dict) and t.get("status") == "in_progress":
+        if isinstance(t, dict) and t.get("status") in ("in_progress", "running"):
             current_task = t
             break
     if current_task is None:
@@ -162,12 +162,15 @@ def build_command_center(os_core: Any) -> dict[str, Any]:
                 1
                 for t in tasks
                 if isinstance(t, dict)
-                and t.get("status") in ("pending", "in_progress")
+                and t.get("status") in ("pending", "in_progress", "running", "waiting")
             ),
             "active_automations": active_automations,
             "pending_confirms": len(pending),
             "diagnostics_ok": bool(diagnostics.get("ok")),
             "tool_count": len([t for t in tools if isinstance(t, dict) and "name" in t]),
+            "plan_progress": getattr(
+                getattr(os_core, "execution", None), "last_plan_progress", None
+            ),
         },
         "tasks": tasks,
         "memory": memories,
@@ -178,4 +181,12 @@ def build_command_center(os_core: Any) -> dict[str, Any]:
         "diagnostics": diagnostics,
         "settings": settings,
         "pending_confirmations": pending,
+        "plan_progress": getattr(
+            getattr(os_core, "execution", None), "last_plan_progress", None
+        ),
+        "plan_timeline": list(
+            reversed(
+                getattr(getattr(os_core, "execution", None), "plan_timeline", None) or []
+            )
+        )[:24],
     }

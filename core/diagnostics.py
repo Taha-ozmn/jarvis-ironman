@@ -33,6 +33,8 @@ class SelfDiagnostics:
         results.append(self._check_projects())
         results.append(self._check_backup())
         results.append(self._check_planner())
+        results.append(self._check_execution())
+        results.append(self._check_degraded())
         results.append(self._check_browser())
         results.append(self._check_vision())
         results.append(self._check_embeddings())
@@ -42,10 +44,20 @@ class SelfDiagnostics:
     def summary(self) -> dict[str, Any]:
         items = self.run()
         ok_count = sum(1 for i in items if i.ok)
+        degraded = False
+        try:
+            from core.degraded import get_degraded_mode
+
+            degraded = bool(get_degraded_mode().active)
+        except Exception:
+            pass
         return {
-            "ok": ok_count == len(items),
+            "ok": ok_count == len(items) and not degraded,
+            "ready": bool(getattr(self._os, "ready", False)),
+            "degraded": degraded,
             "passed": ok_count,
             "total": len(items),
+            "version": _version_payload(),
             "checks": [
                 {"name": i.name, "ok": i.ok, "detail": i.detail, "meta": i.meta}
                 for i in items
@@ -174,6 +186,36 @@ class SelfDiagnostics:
             {"llm": llm_ok},
         )
 
+    def _check_execution(self) -> DiagnosticResult:
+        eng = getattr(self._os, "execution", None)
+        if eng is None:
+            return DiagnosticResult("execution", False, "not initialized")
+        timeline = getattr(eng, "plan_timeline", None) or []
+        return DiagnosticResult(
+            "execution",
+            True,
+            f"tool_retries={getattr(eng, 'tool_max_retries', '?')} timeline={len(timeline)}",
+            {"plan_progress": getattr(eng, "last_plan_progress", None)},
+        )
+
+    def _check_degraded(self) -> DiagnosticResult:
+        try:
+            from core.degraded import get_degraded_mode
+
+            snap = get_degraded_mode().snapshot()
+            return DiagnosticResult(
+                "degraded_mode",
+                True,
+                "active" if snap.active else "nominal",
+                {
+                    "active": snap.active,
+                    "reason": snap.reason,
+                    "cursor_available": snap.cursor_available,
+                },
+            )
+        except Exception as err:
+            return DiagnosticResult("degraded_mode", False, str(err))
+
     def _check_browser(self) -> DiagnosticResult:
         try:
             from tools.browser_tools import browser_diagnostics
@@ -239,3 +281,12 @@ class SelfDiagnostics:
             )
         detail = f"runtime={status.get('runtime')} connected={connected}/{status.get('configured')}"
         return DiagnosticResult("mcp", True, detail, status)
+
+
+def _version_payload() -> dict[str, str]:
+    try:
+        from core.version import version_info
+
+        return version_info()
+    except Exception:
+        return {"version": "unknown"}

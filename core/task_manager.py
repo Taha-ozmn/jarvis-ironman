@@ -45,10 +45,34 @@ class Task:
 class TaskManager:
     """Persist and query user tasks."""
 
-    VALID_STATUSES = frozenset({"pending", "in_progress", "done", "cancelled"})
+    # Spec states + legacy aliases (done / in_progress)
+    VALID_STATUSES = frozenset(
+        {
+            "pending",
+            "planning",
+            "running",
+            "waiting",
+            "retrying",
+            "failed",
+            "completed",
+            "cancelled",
+            "in_progress",  # legacy → running
+            "done",  # legacy → completed
+        }
+    )
+
+    STATUS_ALIASES = {
+        "in_progress": "running",
+        "done": "completed",
+    }
 
     def __init__(self, db: Database) -> None:
         self._db = db
+
+    @classmethod
+    def normalize_status(cls, status: str) -> str:
+        raw = (status or "").strip().lower()
+        return cls.STATUS_ALIASES.get(raw, raw)
 
     def create(
         self,
@@ -92,8 +116,10 @@ class TaskManager:
         due_at: Optional[str] = None,
     ) -> Task:
         task = self.get(task_id)
-        if status is not None and status not in self.VALID_STATUSES:
-            raise ValueError(f"Invalid status: {status}")
+        if status is not None:
+            status = self.normalize_status(status)
+            if status not in self.VALID_STATUSES:
+                raise ValueError(f"Invalid status: {status}")
         new_title = title if title is not None else task.title
         new_desc = description if description is not None else task.description
         new_status = status if status is not None else task.status
@@ -123,9 +149,19 @@ class TaskManager:
         limit: int = 50,
     ) -> list[Task]:
         if status:
+            raw = (status or "").strip().lower()
+            canon = self.normalize_status(raw)
+            aliases = {canon, raw}
+            for legacy, target in self.STATUS_ALIASES.items():
+                if target == canon or legacy == raw:
+                    aliases.add(legacy)
+                    aliases.add(target)
+            ordered = sorted(aliases)
+            placeholders = ",".join("?" for _ in ordered)
             rows = self._db.fetchall(
-                "SELECT * FROM tasks WHERE status = ? ORDER BY priority DESC, id DESC LIMIT ?",
-                (status, limit),
+                f"SELECT * FROM tasks WHERE status IN ({placeholders}) "
+                "ORDER BY priority DESC, id DESC LIMIT ?",
+                (*ordered, limit),
             )
         else:
             rows = self._db.fetchall(

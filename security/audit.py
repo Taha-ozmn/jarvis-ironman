@@ -36,7 +36,19 @@ class AuditLog:
         success: bool = True,
         details: Optional[dict[str, Any]] = None,
     ) -> int:
-        payload = json.dumps(details or {}, ensure_ascii=False, default=str)
+        payload_dict: dict[str, Any] = dict(details or {})
+        try:
+            from core.request_context import get_brain_path, get_request_id
+
+            rid = get_request_id()
+            if rid and "request_id" not in payload_dict:
+                payload_dict["request_id"] = rid
+            brain = get_brain_path()
+            if brain and "brain_path" not in payload_dict:
+                payload_dict["brain_path"] = brain
+        except Exception:
+            pass
+        payload = json.dumps(payload_dict, ensure_ascii=False, default=str)
         cursor = self._db.execute(
             """
             INSERT INTO audit_logs (action, level, success, details, created_at)

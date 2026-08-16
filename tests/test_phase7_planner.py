@@ -187,6 +187,8 @@ class VerificationTests(unittest.TestCase):
     def test_should_verify_known_tools(self) -> None:
         self.assertTrue(should_verify("git.commit"))
         self.assertTrue(should_verify("fs.move"))
+        self.assertTrue(should_verify("fs.write"))
+        self.assertTrue(should_verify("git.add"))
         self.assertFalse(should_verify("system.time"))
 
     def test_verify_fs_move(self) -> None:
@@ -197,6 +199,17 @@ class VerificationTests(unittest.TestCase):
                 "fs.move",
                 {"src": "a", "dst": str(dst)},
                 ToolResult(ok=True, data="moved"),
+            )
+            self.assertTrue(outcome.ok)
+
+    def test_verify_fs_create(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "n.txt"
+            path.touch()
+            outcome = verify_tool_result(
+                "fs.create",
+                {"path": str(path)},
+                ToolResult(ok=True, data="Created"),
             )
             self.assertTrue(outcome.ok)
 

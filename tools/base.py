@@ -14,6 +14,7 @@ class ToolResult:
     ok: bool
     data: Any = None
     error: Optional[str] = None
+    evidence: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -26,7 +27,7 @@ class ToolSpec:
 
 
 class BaseTool(ABC):
-    """Typed tool contract."""
+    """Typed tool contract — validate / run / optional rollback."""
 
     name: str
     description: str
@@ -41,9 +42,22 @@ class BaseTool(ABC):
             input_schema=dict(self.input_schema),
         )
 
+    def validate(self, arguments: dict[str, Any]) -> Optional[str]:
+        """Return error message or None if OK. Override for custom checks."""
+        del arguments
+        return None
+
     @abstractmethod
     def run(self, arguments: dict[str, Any]) -> ToolResult:
         raise NotImplementedError
+
+    def rollback(self, arguments: dict[str, Any], previous: Any = None) -> ToolResult:
+        """Best-effort undo. Default: honest failure (not silently ignored)."""
+        del arguments, previous
+        return ToolResult(
+            ok=False,
+            error=f"rollback not supported for '{self.name}'",
+        )
 
 
 class StubTool(BaseTool):
@@ -64,6 +78,6 @@ class StubTool(BaseTool):
     def run(self, arguments: dict[str, Any]) -> ToolResult:
         return ToolResult(
             ok=False,
-            error=f"Tool '{self.name}' is a stub — not implemented yet (Phase 3+)",
+            error=f"Tool '{self.name}' is a stub — not implemented in this registry",
             data={"received": arguments},
         )

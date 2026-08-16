@@ -64,7 +64,7 @@ class TaskCompleteTool(BaseTool):
         if task_id is None:
             return ToolResult(ok=False, error="task_id required")
         try:
-            task = self._tasks.update(int(task_id), status="done")
+            task = self._tasks.update(int(task_id), status="completed")
         except KeyError:
             return ToolResult(ok=False, error=f"Task not found: {task_id}")
         return ToolResult(ok=True, data=f"Task #{task.id} completed.")

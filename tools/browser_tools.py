@@ -40,6 +40,12 @@ class BrowserOpenUrlTool(BaseTool):
         return ToolResult(ok=True, data=f"Opened {url}")
 
 
+class BrowserNavigateTool(BrowserOpenUrlTool):
+    """Alias for browser.open_url — keeps older NL / discovery names working."""
+
+    name = "browser.navigate"
+    description = "Navigate to a URL (alias of browser.open_url)"
+
 class BrowserSearchTool(BaseTool):
     name = "browser.search"
     description = "Open a web search results page in the browser"

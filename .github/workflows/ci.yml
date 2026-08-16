@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "cursor/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  playwright-optional:
+    runs-on: ubuntu-latest
+    # Optional e2e — does not fail the required unit job when skipped
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install base + optional
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          if [ -f requirements-optional.txt ]; then pip install -r requirements-optional.txt || true; fi
+      - name: Playwright e2e (skips if unavailable)
+        env:
+          PLAYWRIGHT_E2E: "1"
+        run: |
+          python -m unittest tests.test_playwright_optional_e2e -v || true

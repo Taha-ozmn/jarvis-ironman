@@ -26,9 +26,20 @@ class VerifyOutcome:
 ALWAYS_VERIFY_TOOLS = frozenset(
     {
         "git.commit",
+        "git.add",
+        "git.push",
         "fs.move",
+        "fs.write",
+        "fs.create",
         "dev.run_tests",
+        "dev.run_command",
+        "browser.open_url",
+        "browser.search",
+        "browser.get_page_text",
+        "browser.fill_form",
+        "browser.click",
         "system.backup",
+        "system.open_app",
     }
 )
 
@@ -54,11 +65,24 @@ def verify_tool_result(
     try:
         if tool_name == "git.commit":
             return _verify_git_commit(arguments, working_dir)
+        if tool_name == "git.add":
+            return _verify_git_add(arguments, working_dir)
+        if tool_name == "git.push":
+            return _verify_git_push(arguments, result, working_dir)
         if tool_name == "fs.move":
             return _verify_fs_move(arguments)
+        if tool_name in ("fs.write", "fs.create"):
+            return _verify_fs_path_exists(arguments, working_dir)
         if tool_name == "dev.run_tests":
-            # Result already encodes exit status
-            return VerifyOutcome(ok=True, message="tests reported ok")
+            return _verify_dev_command(result, label="tests")
+        if tool_name == "dev.run_command":
+            return _verify_dev_command(result, label="command")
+        if tool_name in ("browser.open_url", "browser.search"):
+            return _verify_browser_open(arguments, result, tool_name)
+        if tool_name == "browser.get_page_text":
+            return _verify_browser_page_text(result)
+        if tool_name in ("browser.fill_form", "browser.click"):
+            return _verify_playwright_action(tool_name, arguments, result)
         if tool_name == "system.backup":
             path = ""
             if isinstance(result.data, dict):
@@ -75,10 +99,27 @@ def verify_tool_result(
                 message="Backup path missing after run",
                 alternate="Retry backup or free disk space",
             )
+        if tool_name == "system.open_app":
+            return _verify_open_app(arguments, result)
     except Exception as err:
         logger.exception("verify crashed for %s", tool_name)
         return VerifyOutcome(ok=False, message=str(err), alternate=_alternate_stub(tool_name))
     return VerifyOutcome(ok=True, message="ok")
+
+
+def _resolve_cwd(
+    arguments: dict[str, Any],
+    working_dir: Optional[Callable[[], Path]],
+) -> Path:
+    override = str(arguments.get("path") or arguments.get("cwd") or "").strip()
+    if override and Path(override).expanduser().is_dir():
+        return Path(override).expanduser().resolve()
+    if working_dir:
+        try:
+            return Path(working_dir()).expanduser().resolve()
+        except Exception:
+            pass
+    return Path.cwd()
 
 
 def _verify_git_commit(
@@ -87,10 +128,7 @@ def _verify_git_commit(
 ) -> VerifyOutcome:
     import subprocess
 
-    cwd = working_dir() if working_dir else Path.cwd()
-    override = str(arguments.get("path") or "").strip()
-    if override:
-        cwd = Path(override).expanduser().resolve()
+    cwd = _resolve_cwd(arguments, working_dir)
     try:
         proc = subprocess.run(
             ["git", "log", "-1", "--oneline"],
@@ -107,6 +145,72 @@ def _verify_git_commit(
     return VerifyOutcome(ok=True, message=(proc.stdout or "").strip()[:120])
 
 
+def _verify_git_add(
+    arguments: dict[str, Any],
+    working_dir: Optional[Callable[[], Path]],
+) -> VerifyOutcome:
+    import subprocess
+
+    cwd = _resolve_cwd(arguments, working_dir)
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception as err:
+        return VerifyOutcome(ok=False, message=str(err), alternate="Check git repo path")
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "git diff --cached failed").strip()
+        return VerifyOutcome(ok=False, message=err[:300], alternate="Retry git.add")
+    staged = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    if not staged:
+        return VerifyOutcome(
+            ok=False,
+            message="Nothing staged after git.add",
+            alternate="Check pathspecs or working tree",
+        )
+    return VerifyOutcome(ok=True, message=f"staged {len(staged)} path(s)")
+
+
+def _verify_git_push(
+    arguments: dict[str, Any],
+    result: ToolResult,
+    working_dir: Optional[Callable[[], Path]],
+) -> VerifyOutcome:
+    """Trust explicit push success speech; otherwise check branch is not ahead."""
+    import subprocess
+
+    data = result.data if isinstance(result.data, str) else ""
+    lower = data.lower()
+    if any(w in lower for w in ("pushed", "up-to-date", "everything up-to-date", "ok")):
+        return VerifyOutcome(ok=True, message=data[:120] or "push ok")
+    cwd = _resolve_cwd(arguments, working_dir)
+    try:
+        proc = subprocess.run(
+            ["git", "status", "-sb"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception as err:
+        return VerifyOutcome(ok=False, message=str(err), alternate="Check remote / network")
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "git status failed").strip()
+        return VerifyOutcome(ok=False, message=err[:300], alternate="Retry git.push")
+    line = (proc.stdout or "").splitlines()[0] if (proc.stdout or "").strip() else ""
+    if "ahead" in line.lower():
+        return VerifyOutcome(
+            ok=False,
+            message=f"Still ahead after push: {line[:120]}",
+            alternate="Check remote auth or retry push",
+        )
+    return VerifyOutcome(ok=True, message=line[:120] or "push verified")
+
+
 def _verify_fs_move(arguments: dict[str, Any]) -> VerifyOutcome:
     dst = str(arguments.get("dst") or "").strip()
     if not dst:
@@ -119,6 +223,124 @@ def _verify_fs_move(arguments: dict[str, Any]) -> VerifyOutcome:
         message=f"Destination missing after move: {path}",
         alternate="Retry move or check permissions",
     )
+
+
+def _verify_fs_path_exists(
+    arguments: dict[str, Any],
+    working_dir: Optional[Callable[[], Path]],
+) -> VerifyOutcome:
+    raw = str(arguments.get("path") or "").strip()
+    if not raw:
+        return VerifyOutcome(ok=False, message="path missing", alternate="Provide path")
+    path = Path(raw).expanduser()
+    if not path.is_absolute() and working_dir:
+        try:
+            path = (Path(working_dir()) / path).resolve()
+        except Exception:
+            path = path.expanduser()
+    if path.exists():
+        return VerifyOutcome(ok=True, message=f"exists: {path.name}")
+    return VerifyOutcome(
+        ok=False,
+        message=f"Path missing after write/create: {path}",
+        alternate="Retry write or check permissions",
+    )
+
+
+def _verify_dev_command(result: ToolResult, *, label: str) -> VerifyOutcome:
+    """Exit code already encoded in ToolResult.ok; require non-empty feedback."""
+    if isinstance(result.data, str) and result.data.strip():
+        return VerifyOutcome(ok=True, message=result.data.strip()[:120])
+    if result.ok:
+        return VerifyOutcome(ok=True, message=f"{label} ok")
+    return VerifyOutcome(
+        ok=False,
+        message=result.error or f"{label} produced no output",
+        alternate=f"Retry {label} or check project path",
+    )
+
+
+def _verify_browser_open(
+    arguments: dict[str, Any],
+    result: ToolResult,
+    tool_name: str,
+) -> VerifyOutcome:
+    data = result.data if isinstance(result.data, str) else ""
+    lower = data.lower()
+    if tool_name == "browser.search":
+        if "search" in lower or "duckduckgo" in lower or "«" in data:
+            return VerifyOutcome(ok=True, message=data[:120])
+    else:
+        url = str(arguments.get("url") or "").strip()
+        if "opened" in lower or (url and url.lower() in lower):
+            return VerifyOutcome(ok=True, message=data[:120] or "opened")
+    if data.strip():
+        # Honest soft-pass: tool returned speech but without expected phrase
+        return VerifyOutcome(ok=True, message=data[:120])
+    return VerifyOutcome(
+        ok=False,
+        message="Browser open reported empty success",
+        alternate="Retry with a full https URL",
+    )
+
+
+def _verify_browser_page_text(result: ToolResult) -> VerifyOutcome:
+    data = result.data if isinstance(result.data, str) else ""
+    if len(data.strip()) >= 8:
+        return VerifyOutcome(ok=True, message=f"fetched {len(data)} chars")
+    return VerifyOutcome(
+        ok=False,
+        message="Page text too short or empty after fetch",
+        alternate="Retry URL or use browser.open_url",
+    )
+
+
+def _verify_playwright_action(
+    tool_name: str,
+    arguments: dict[str, Any],
+    result: ToolResult,
+) -> VerifyOutcome:
+    """Post-check for Playwright fill/click — only reached when result.ok."""
+    data = result.data if isinstance(result.data, str) else ""
+    lower = data.lower()
+    selector = str(arguments.get("selector") or "").strip()
+    if tool_name == "browser.fill_form":
+        if "filled" in lower or (selector and selector.lower() in lower):
+            return VerifyOutcome(ok=True, message=data[:120] or "filled")
+    if tool_name == "browser.click":
+        if "clicked" in lower or (selector and selector.lower() in lower):
+            return VerifyOutcome(ok=True, message=data[:120] or "clicked")
+    if data.strip():
+        return VerifyOutcome(ok=True, message=data[:120])
+    return VerifyOutcome(
+        ok=False,
+        message=f"{tool_name} reported empty success",
+        alternate="Retry with a valid selector or install Playwright",
+    )
+
+
+def _verify_open_app(arguments: dict[str, Any], result: ToolResult) -> VerifyOutcome:
+    """Success speech must confirm a real open — never trust fire-and-forget Popen."""
+    data = result.data if isinstance(result.data, str) else ""
+    name = str(arguments.get("name") or "").strip()
+    if not data.strip():
+        return VerifyOutcome(
+            ok=False,
+            message="Open reported empty success",
+            alternate="Retry open with an explicit app name",
+        )
+    lower = data.lower()
+    ok_words = ("is open", "açıldı", "acildi", "opened", "launching")
+    if not any(w in lower for w in ok_words):
+        return VerifyOutcome(
+            ok=False,
+            message="Open success missing confirmation phrase",
+            alternate="Retry system.open_app",
+        )
+    if name and name.lower() not in lower:
+        # Resolved display name may differ (chrome → Google Chrome) — still OK if phrase present
+        pass
+    return VerifyOutcome(ok=True, message=data[:120])
 
 
 def _alternate_stub(tool_name: str) -> str:

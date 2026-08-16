@@ -33,7 +33,7 @@ jarvis:
   ai_only: true
   conversation_turns: 6
   persona_refresh_interval: 5
-  workspace: "/Users/mac/Desktop/Projeler/projelerim-github/jarvis-ironman"
+  workspace: "."
   full_access: true
   sandbox: false
   auto_review: false
@@ -94,6 +94,7 @@ boot:
     artist: AC/DC
 
 # JARVIS 2.0 Personal AI OS — additive core (does not replace v1 path)
+# Security preset: auto_approve_dangerous false = safe autonomy (see docs/SECURITY.md)
 # Phase 6: max_permission_level 3 — Level 3 (push/rm) still needs HUD/voice confirm (Phase 5).
 jarvis2:
   enabled: true
@@ -109,8 +110,13 @@ jarvis2:
   memory_recall_max_chars: 400
   # Phase 7–8
   plan_max_retries: 1
+  # Phase 1 Stability — single-tool retries (max 3, exponential backoff)
+  tool_max_retries: 3
+  # Background plan completion speech throttle (seconds)
+  plan_speech_min_interval: 8
   backup_retention: 10
   file_watch_enabled: true
+  automation_packs_dir: config/automation_packs
   mcp:
     enabled: true
     # Live stdio MCP servers (empty = OK, diagnostics reports "no MCP servers")

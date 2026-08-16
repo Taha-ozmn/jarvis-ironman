@@ -55,6 +55,15 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("stub", (result.error or "").lower())
 
+    def test_production_navigate_alias(self) -> None:
+        from tools.browser_tools import BrowserNavigateTool
+
+        tool = BrowserNavigateTool()
+        self.assertEqual(tool.name, "browser.navigate")
+        # Don't launch a browser in CI — empty url fails honestly
+        result = tool.run({"url": ""})
+        self.assertFalse(result.ok)
+
     def test_discover_by_level(self) -> None:
         reg = ToolRegistry()
         register_builtin_stubs(reg)

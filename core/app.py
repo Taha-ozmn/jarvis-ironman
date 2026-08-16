@@ -154,6 +154,16 @@ class JarvisOS:
             plan_runner=self._run_plan_goal,
             llm=self.llm,
         )
+        # Optional plugins (Phase 3) — failures isolated
+        try:
+            from tools.packages import load_plugins
+
+            load_plugins(
+                self.tools,
+                {"root": str(self.root), "config": self.config},
+            )
+        except Exception:
+            logger.exception("plugin load failed (isolated)")
         # Live MCP — connect configured servers after local tools exist
         mcp_cfg = j2.get("mcp") or {}
         if bool(mcp_cfg.get("enabled", True)):
@@ -379,7 +389,23 @@ class JarvisOS:
                 if legacy:
                     return _done(legacy, brain_path="legacy", reason="legacy")
 
-            # 4) Cursor gate
+            # 4) Cursor gate — degraded mode blocks Cursor (local tools still work)
+            from core.degraded import get_degraded_mode
+
+            if not get_degraded_mode().allow_cursor():
+                speech = local_fallback_speech(complexity, command)
+                if not speech:
+                    speech = (
+                        "I'm in offline mode — local tools only. "
+                        "Try a direct command, or restore the model connection."
+                    )
+                return _done(
+                    speech,
+                    brain_path="degraded",
+                    reason="degraded_mode",
+                    allow=False,
+                )
+
             if not cursor_ok:
                 speech = local_fallback_speech(complexity, command)
                 return _done(
@@ -472,43 +498,61 @@ class JarvisOS:
         return result.speech
 
     def recall_for_prompt(self, query: str) -> str:
-        """Relevant long-term memories for LLM context — not a full dump."""
+        """Relevant long-term memories for LLM context — hybrid rank, not a dump."""
+        from memory.retrieval import format_recall_block, hybrid_retrieve, temporal_query_hours
+
         q = (query or "").strip()
         if not q:
             return ""
-        seen: set[int] = set()
-        hits = []
-        # Semantic first
         try:
-            for mem in self.memory.search_semantic(q, limit=self.recall_limit):
-                if mem.id in seen:
-                    continue
-                seen.add(mem.id)
-                hits.append(mem)
+            ranked = hybrid_retrieve(
+                self.memory,
+                q,
+                limit=self.recall_limit,
+                since_hours=temporal_query_hours(q),
+            )
+            return format_recall_block(ranked, max_chars=self.recall_max_chars)
         except Exception:
-            logger.exception("semantic recall failed — FTS fallback")
-        if len(hits) < self.recall_limit:
-            tokens = [t for t in re_split_tokens(q) if len(t) > 2][:6]
-            for token in tokens or [q[:40]]:
-                for mem in self.memory.search(token, limit=self.recall_limit):
-                    if mem.id in seen:
-                        continue
-                    seen.add(mem.id)
-                    hits.append(mem)
-                    if len(hits) >= self.recall_limit:
-                        break
-                if len(hits) >= self.recall_limit:
-                    break
-        if not hits:
+            logger.exception("hybrid recall failed — empty context")
             return ""
-        lines = ["[LONG-TERM MEMORY — use only if relevant]"]
-        for mem in hits[: self.recall_limit]:
-            cat = mem.category or "general"
-            lines.append(f"- ({cat}) {mem.content}")
-        block = "\n".join(lines)
-        if len(block) > self.recall_max_chars:
-            block = block[: self.recall_max_chars].rsplit("\n", 1)[0] + "\n- …"
-        return block
+
+    def cancel_active_plan(self, reason: str = "user_cancel") -> bool:
+        """Cancel in-flight plan (voice «dur» / stop)."""
+        try:
+            return bool(self.execution.cancel_active_plan(reason))
+        except Exception:
+            logger.exception("cancel_active_plan failed")
+            return False
+
+    def resume_paused_plan(self) -> Optional[str]:
+        """Resume a plan paused for Level-3 confirmation."""
+        try:
+            result = self.execution.resume_paused_plan()
+        except Exception:
+            logger.exception("resume_paused_plan failed")
+            return None
+        if result is None:
+            return None
+        return result.speech
+
+    def enter_degraded_mode(self, reason: str = "model_unavailable") -> None:
+        from core.degraded import get_degraded_mode
+
+        get_degraded_mode().enter(reason)
+        try:
+            self.audit.write(
+                action="mode.degraded",
+                level=0,
+                success=True,
+                details={"reason": reason},
+            )
+        except Exception:
+            pass
+
+    def exit_degraded_mode(self) -> None:
+        from core.degraded import get_degraded_mode
+
+        get_degraded_mode().exit()
 
     def ingest_conversation(self, user_text: str, assistant_text: str = "") -> list[int]:
         """Extract and store safe memories from a turn."""

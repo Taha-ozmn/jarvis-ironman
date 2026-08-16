@@ -134,7 +134,7 @@ def build_command_center(os_core: Any) -> dict[str, Any]:
 
     current_task = None
     for t in tasks:
-        if isinstance(t, dict) and t.get("status") == "in_progress":
+        if isinstance(t, dict) and t.get("status") in ("in_progress", "running"):
             current_task = t
             break
     if current_task is None:

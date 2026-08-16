@@ -94,6 +94,7 @@ boot:
     artist: AC/DC
 
 # JARVIS 2.0 Personal AI OS — additive core (does not replace v1 path)
+# Security preset: auto_approve_dangerous false = safe autonomy (see docs/SECURITY.md)
 # Phase 6: max_permission_level 3 — Level 3 (push/rm) still needs HUD/voice confirm (Phase 5).
 jarvis2:
   enabled: true

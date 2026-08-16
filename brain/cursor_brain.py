@@ -304,10 +304,11 @@ class JarvisBrain:
     def _pick_model(self, command: str, complexity: str) -> str | None:
         if not self.model_routing:
             return None
+        # Prefer OS complexity → cheap/smart when available (Phase 6)
+        if complexity in ("chat", "simple", "medium", "complex", "autonomous"):
+            return self._router.pick_for_complexity(complexity)
         if complexity == "deep":
             return self._router.pick("deep")
-        if complexity == "complex":
-            return self._router.pick("code")
         category = self._router.classify(command)
         return self._router.pick(category)
 

@@ -204,6 +204,12 @@ class JarvisCore:
                 self.speaker.flush()
             except Exception:
                 pass
+            # Cooperative cancel for in-flight plans (Phase 4)
+            try:
+                if getattr(self, "os_v2", None) is not None and self.os_v2.ready:
+                    self.os_v2.cancel_active_plan("user_stop")
+            except Exception:
+                pass
             return "Standing by."
         return None
 

@@ -9,7 +9,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.cancellation import (
+    CancellationToken,
+    cancel_active,
+    set_active_token,
+)
 from core.event_bus import EventBus
+from core.evidence import EvidenceClock, ExecutionEvidence
 from core.planner import Plan, PlanStep
 from core.recovery import (
     DEFAULT_MAX_RETRIES,
@@ -19,6 +25,7 @@ from core.recovery import (
     sleep_backoff,
     user_safe_speech,
 )
+from core.request_context import get_request_id
 from core.verification import should_verify, verify_tool_result
 from security.audit import AuditLog
 from security.confirmation import ConfirmationGate
@@ -80,6 +87,13 @@ class ExecutionEngine:
         self.tasks = tasks
         self._plan_lock = threading.Lock()
         self._paused_plan: Optional[tuple[Plan, int]] = None
+        self._cancel_token = CancellationToken()
+        self.last_evidence: list[ExecutionEvidence] = []
+
+    def cancel_active_plan(self, reason: str = "user_cancel") -> bool:
+        """Signal cancel for the in-flight plan (cooperative)."""
+        self._cancel_token.cancel(reason)
+        return cancel_active(reason)
 
     def execute(self, request: ExecutionRequest) -> ToolResult:
         """Execute one tool with bounded retry + exponential backoff + verify."""
@@ -103,18 +117,22 @@ class ExecutionEngine:
                     details={"message": outcome.message, "alternate": outcome.alternate},
                 )
                 if outcome.ok:
+                    if last.evidence is not None:
+                        last.evidence["verified"] = True
+                        last.evidence["status"] = "verified"
                     return last
                 last = ToolResult(
                     ok=False,
                     error=user_safe_speech(
                         f"Verification failed: {outcome.message}. {outcome.alternate}"
                     ),
+                    evidence=last.evidence,
                 )
             else:
                 # Never retry confirmation / permission denials
                 err = last.error or ""
                 if "confirmation" in err.lower() or "permission denied" in err.lower():
-                    return ToolResult(ok=False, error=user_safe_speech(err))
+                    return ToolResult(ok=False, error=user_safe_speech(err), evidence=last.evidence)
                 cls = classify_error(err)
                 log_failure(request.tool_name, err, error_class=cls, attempt=attempt + 1)
                 if not is_retryable(cls, err) or attempt >= attempts - 1:
@@ -125,6 +143,7 @@ class ExecutionEngine:
                             target=str(request.arguments.get("name") or ""),
                             error_class=cls,
                         ),
+                        evidence=last.evidence,
                     )
                 self.audit.write(
                     action=f"tool.retry.{request.tool_name}",
@@ -174,91 +193,126 @@ class ExecutionEngine:
                     metadata=meta,
                 )
                 plan.task_id = task.id
-                self.tasks.update(task.id, status="in_progress")
+                self.tasks.update(task.id, status="running")
             except Exception:
                 logger.exception("failed to persist plan task")
 
         results: list[dict[str, Any]] = []
         speeches: list[str] = []
         start = max(0, int(start_at))
+        self._cancel_token.reset()
+        set_active_token(self._cancel_token)
 
-        for idx in range(start, len(plan.steps)):
-            step = plan.steps[idx]
-            outcome = self._run_step_with_retries(step, requested_by=requested_by)
-            results.append(
-                {
-                    "index": idx,
-                    "tool": step.tool_name,
-                    "ok": outcome.ok,
-                    "data": outcome.data if isinstance(outcome.data, str) else None,
-                    "error": outcome.error,
-                }
+        try:
+            for idx in range(start, len(plan.steps)):
+                if self._cancel_token.is_cancelled:
+                    speech = self._compose_speech(
+                        speeches,
+                        stopped=f"Cancelled at step {idx + 1}.",
+                    )
+                    self._update_task_status(plan, "cancelled")
+                    self.bus.publish(
+                        "plan.cancelled",
+                        {
+                            "plan_id": plan.plan_id,
+                            "step": idx,
+                            "reason": self._cancel_token.reason,
+                        },
+                        source="execution_engine",
+                    )
+                    return PlanRunResult(
+                        ok=False,
+                        plan_id=plan.plan_id,
+                        completed=idx,
+                        total=len(plan.steps),
+                        speech=speech,
+                        stopped_reason=self._cancel_token.reason or "cancelled",
+                        resume_from=idx,
+                        step_results=results,
+                    )
+
+                step = plan.steps[idx]
+                outcome = self._run_step_with_retries(step, requested_by=requested_by)
+                results.append(
+                    {
+                        "index": idx,
+                        "tool": step.tool_name,
+                        "ok": outcome.ok,
+                        "data": outcome.data if isinstance(outcome.data, str) else None,
+                        "error": outcome.error,
+                        "evidence": outcome.evidence,
+                    }
+                )
+                if outcome.ok and isinstance(outcome.data, str) and outcome.data.strip():
+                    speeches.append(outcome.data.strip())
+
+                # Level-3 denial → pause for resume
+                if not outcome.ok and "confirmation" in (outcome.error or "").lower():
+                    with self._plan_lock:
+                        self._paused_plan = (plan, idx)
+                    speech = self._compose_speech(
+                        speeches,
+                        stopped=f"Paused at step {idx + 1}: confirmation required.",
+                    )
+                    self._update_task_status(plan, "waiting")
+                    self.bus.publish(
+                        "plan.paused",
+                        {"plan_id": plan.plan_id, "step": idx, "reason": "confirmation"},
+                        source="execution_engine",
+                    )
+                    return PlanRunResult(
+                        ok=False,
+                        plan_id=plan.plan_id,
+                        completed=idx,
+                        total=len(plan.steps),
+                        speech=speech,
+                        stopped_reason="confirmation_required",
+                        resume_from=idx,
+                        step_results=results,
+                    )
+
+                if not outcome.ok:
+                    speech = self._compose_speech(
+                        speeches,
+                        stopped=f"Stopped at step {idx + 1} ({step.tool_name}): {outcome.error}",
+                    )
+                    self._update_task_status(plan, "failed")
+                    self.bus.publish(
+                        "plan.failed",
+                        {"plan_id": plan.plan_id, "step": idx, "error": outcome.error},
+                        source="execution_engine",
+                    )
+                    return PlanRunResult(
+                        ok=False,
+                        plan_id=plan.plan_id,
+                        completed=idx,
+                        total=len(plan.steps),
+                        speech=speech,
+                        stopped_reason=outcome.error or "step_failed",
+                        resume_from=idx,
+                        step_results=results,
+                    )
+
+            self._update_task_status(plan, "completed")
+            with self._plan_lock:
+                if self._paused_plan and self._paused_plan[0].plan_id == plan.plan_id:
+                    self._paused_plan = None
+            speech = self._compose_speech(speeches, stopped="Plan complete.")
+            self.bus.publish(
+                "plan.completed",
+                {"plan_id": plan.plan_id, "steps": len(plan.steps)},
+                source="execution_engine",
             )
-            if outcome.ok and isinstance(outcome.data, str) and outcome.data.strip():
-                speeches.append(outcome.data.strip())
-
-            # Level-3 denial → pause for resume
-            if not outcome.ok and "confirmation" in (outcome.error or "").lower():
-                with self._plan_lock:
-                    self._paused_plan = (plan, idx)
-                speech = self._compose_speech(speeches, stopped=f"Paused at step {idx + 1}: confirmation required.")
-                self._update_task_status(plan, "in_progress")
-                self.bus.publish(
-                    "plan.paused",
-                    {"plan_id": plan.plan_id, "step": idx, "reason": "confirmation"},
-                    source="execution_engine",
-                )
-                return PlanRunResult(
-                    ok=False,
-                    plan_id=plan.plan_id,
-                    completed=idx,
-                    total=len(plan.steps),
-                    speech=speech,
-                    stopped_reason="confirmation_required",
-                    resume_from=idx,
-                    step_results=results,
-                )
-
-            if not outcome.ok:
-                speech = self._compose_speech(
-                    speeches,
-                    stopped=f"Stopped at step {idx + 1} ({step.tool_name}): {outcome.error}",
-                )
-                self._update_task_status(plan, "cancelled")
-                self.bus.publish(
-                    "plan.failed",
-                    {"plan_id": plan.plan_id, "step": idx, "error": outcome.error},
-                    source="execution_engine",
-                )
-                return PlanRunResult(
-                    ok=False,
-                    plan_id=plan.plan_id,
-                    completed=idx,
-                    total=len(plan.steps),
-                    speech=speech,
-                    stopped_reason=outcome.error or "step_failed",
-                    resume_from=idx,
-                    step_results=results,
-                )
-
-        self._update_task_status(plan, "done")
-        with self._plan_lock:
-            if self._paused_plan and self._paused_plan[0].plan_id == plan.plan_id:
-                self._paused_plan = None
-        speech = self._compose_speech(speeches, stopped="Plan complete.")
-        self.bus.publish(
-            "plan.completed",
-            {"plan_id": plan.plan_id, "steps": len(plan.steps)},
-            source="execution_engine",
-        )
-        return PlanRunResult(
-            ok=True,
-            plan_id=plan.plan_id,
-            completed=len(plan.steps),
-            total=len(plan.steps),
-            speech=speech,
-            step_results=results,
-        )
+            return PlanRunResult(
+                ok=True,
+                plan_id=plan.plan_id,
+                completed=len(plan.steps),
+                total=len(plan.steps),
+                speech=speech,
+                step_results=results,
+            )
+        finally:
+            set_active_token(None)
 
     def resume_paused_plan(self) -> Optional[PlanRunResult]:
         with self._plan_lock:
@@ -266,6 +320,7 @@ class ExecutionEngine:
         if not paused:
             return None
         plan, idx = paused
+        self._cancel_token.reset()
         return self.execute_plan(plan, start_at=idx, persist_task=False)
 
     def execute_plan_background(
@@ -387,6 +442,19 @@ class ExecutionEngine:
             self._audit_failure(request, validation_error, level=effective)
             return result
 
+        # Tool-level validate() hook (optional; None = ok)
+        if callable(getattr(tool, "validate", None)):
+            try:
+                custom = tool.validate(request.arguments)
+                if custom:
+                    result = ToolResult(ok=False, error=str(custom))
+                    self._audit_failure(request, result.error or "", level=effective)
+                    return result
+            except Exception as err:
+                result = ToolResult(ok=False, error=f"validate error: {err}")
+                self._audit_failure(request, result.error or "", level=effective)
+                return result
+
         self.bus.publish(
             "tool.executing",
             {
@@ -396,11 +464,35 @@ class ExecutionEngine:
             },
             source="execution_engine",
         )
+        clock = EvidenceClock()
         try:
             result = tool.run(request.arguments)
         except Exception as err:
             logger.exception("Tool %s crashed", tool.name)
             result = ToolResult(ok=False, error=str(err))
+
+        if not isinstance(result, ToolResult):
+            result = ToolResult(ok=False, error="tool returned invalid result type")
+
+        evidence = ExecutionEvidence(
+            tool=tool.name,
+            input=dict(request.arguments),
+            output=result.data if result.ok else None,
+            status="ok" if result.ok else "error",
+            duration_ms=round(clock.ms(), 2),
+            error=result.error,
+            request_id=get_request_id(),
+        )
+        if result.evidence is None:
+            result.evidence = evidence.to_dict()
+        else:
+            # Preserve tool-supplied keys; fill gaps
+            merged = evidence.to_dict()
+            merged.update(result.evidence)
+            result.evidence = merged
+        self.last_evidence.append(evidence)
+        if len(self.last_evidence) > 40:
+            self.last_evidence = self.last_evidence[-40:]
 
         self.audit.write(
             action=f"tool.{tool.name}",
@@ -410,6 +502,7 @@ class ExecutionEngine:
                 "args": request.arguments,
                 "error": result.error,
                 "requested_by": request.requested_by,
+                "evidence": result.evidence,
             },
         )
         self.bus.publish(

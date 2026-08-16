@@ -16,6 +16,16 @@ Durum: `Completed` | `In Progress` | `Next` | `Future`
 | C-03 | CommandRouter + ExecutionEngine + Planner |
 | C-04 | Automation / projects / git / dev tools |
 | C-05 | HUD command center + REST-ish diagnostics |
+| P0-AUDIT | Architecture audit + roadmap docs |
+| S-01…S-06 | Phase 1 stability (open, recovery, retries, workspace, legacy) |
+| O-01…O-03 | Phase 2 orchestrator (`handle_turn`, Cursor gate, request_id) |
+| T-01 | Tool validate/rollback hooks + plugin loader |
+| K-02/K-03 | Task states + plan cancel/resume |
+| M-01 | Hybrid memory retrieval + temporal phrases |
+| V-01 | ExecutionEvidence on tool calls |
+| R-01 | Degraded mode + cheap/smart model routing |
+| X-01 | Security / tools / memory / recovery docs |
+| Q-01 | Chaos/recovery unit tests |
 
 ---
 
@@ -23,16 +33,7 @@ Durum: `Completed` | `In Progress` | `Next` | `Future`
 
 | ID | Description | Priority | Status | Acceptance Criteria |
 |----|-------------|----------|--------|---------------------|
-| P0-AUDIT | Architecture audit + roadmap docs | P0 | Completed | Docs present |
-| S-01 | OpenApp resolve + retry + Applications fallback | P0 | Completed | `open -a` returncode; no false success |
-| S-02 | User-safe recovery speech (no raw Could not open) | P0 | Completed | TTS/tool errors rewritten |
-| S-03 | Single-tool retry max 3 + exponential backoff | P0 | Completed | `tool_max_retries`; classify errors |
-| S-04 | Workspace `.` → repo root if stale | P0 | Completed | `ensure_jarvis2_defaults` |
-| S-05 | Open/STT regression tests (açık, açsana, krom) | P0 | Completed | `tests/test_phase1_stability.py` |
-| S-06 | Action miss → legacy local before Cursor | P0 | Completed | `ai_only` + looks_like_action |
-| O-01 | JarvisOS `handle_turn` single entry | P0 | Completed | main uses handle_turn |
-| O-02 | Complexity gate: CHAT/SIMPLE never Cursor | P0 | Completed | `core/complexity.py` + tests |
-| O-03 | request_id on audit / turn | P0 | Completed | `core/request_context.py` |
+| P3-7 | Tools, tasks, memory, evidence, routing | P0 | Completed | Tests green; docs present |
 
 ---
 
@@ -41,35 +42,35 @@ Durum: `Completed` | `In Progress` | `Next` | `Future`
 | ID | Description | Priority | Dependencies |
 |----|-------------|----------|--------------|
 | O-04 | Reduce DecisionEngine/Router overlap (when DecisionEngine lands) | P1 | O-01 |
-| K-02 | Task checkpoint resume | P0 | O-01 |
-| K-03 | CancellationToken for plans | P0 | K-02 |
-| V-01 | Evidence object on every tool call | P0 | S-03 |
-| X-01 | Document safe autonomy preset | P1 | — |
+| U-01 | Streaming HUD progress for long plans | P1 | K-03 |
+| V-02 | Broader verify coverage for fs/git tools | P1 | V-01 |
+| P-01 | Perf: trim Cursor path for SIMPLE misses | P2 | O-02 |
 
 ---
 
 ## Future
 
-Phases 2–14 per master spec: orchestrator, tools/plugins, task engine, memory retrieval, model fallback, streaming HUD, voice layer, automation YAML, security, chaos tests, performance, production diagnostics.
+Phases 8–14 polish: streaming HUD, voice layer refinements, automation YAML packs, production diagnostics dashboards. Incremental only.
 
 **Yapılmayacak:** Full rewrite, PostgreSQL zorunluluğu, voice/HUD/Cursor kaldırma.
 
 ---
 
-## Phase report (Phase 1 + 2)
+## Phase report (Phase 1–7)
 
 ```
 WHAT CHANGED
-  Phase 1: OpenApp verify+retry+fallback; recovery speech; tool retries;
-  workspace guard; action→legacy; audit docs.
-  Phase 2: handle_turn; CHAT/SIMPLE never Cursor; request_id in audit.
+  Phase 1–2: open verify+retry; recovery speech; handle_turn; Cursor gate.
+  Phase 3–4: tool validate/rollback; plugins; task state machine; cancel.
+  Phase 5–7: hybrid memory; ExecutionEvidence; degraded + model routing.
+  Docs: TOOLS, SECURITY, ERROR_RECOVERY, MEMORY, MODEL_ROUTING, TESTING, ARCHITECTURE.
 
 WHY
-  False open claims + raw errors; trivial turns paying Cursor latency.
+  False success / raw errors; trivial Cursor cost; no cancel/evidence; weak recall.
 
 TEST RESULT
-  unittest discover — phase1 + phase2 + existing suite.
+  unittest discover — phase1–7 + existing suite.
 
 NEXT
-  Task resume/cancel + execution evidence.
+  Streaming HUD; broader verify; DecisionEngine consolidation.
 ```

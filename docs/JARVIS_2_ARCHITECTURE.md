@@ -211,13 +211,20 @@ Tek kullanıcı / tek cihaz için uygun. Event bus + SQLite ile yerel ölçek ye
 
 # Yapılması Gerekenler
 
-### Kritik / Yüksek (Phase 2–8 tamam)
-Permission, audit, SQLite/FTS, tools, automation (+file watch), HUD confirm, project/git/dev, planner (+LLM refine hook), backup, MCP schema adapter, optional Playwright.
+### Kritik / Yüksek (Phase 2–8 tamam + v2.0.0)
+Permission, audit, SQLite/FTS, tools, automation, HUD confirm, DecisionEngine,
+backup, MCP adapter, optional Playwright, CI — landed.
 
 ### Bilinçli eksikler / sonraki
 - Multi-device sync (out of scope)
 - Heavy ML sentence-transformers (local hashing embeddings yeterli)
 - Continuous screen capture (bilinçli olarak yok — yalnızca on-demand)
+- MCP sunucu paketleri (config boş; Calendar/Notes istenince eklenir)
+- Offline STT (Google STT ağ ister)
+
+### Not
+Eski «Zayıf Yönler» (permissions/tests/memory yok) **artık geçerli değil** —
+güncel durum: `docs/ARCHITECTURE_AUDIT.md`, `docs/ROADMAP.md`.
 
 ---
 

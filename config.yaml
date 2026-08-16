@@ -50,6 +50,7 @@ voice:
   native_voice: Daniel
   native_rate: 165
   edge_timeout: 10
+  # Match jarvis.language primary tag when possible (see config/presets/safe.yaml)
   listen_language: tr-TR
   listen_timeout: 4
   phrase_limit: 6
@@ -73,6 +74,7 @@ ui:
   min_command_length: 2
 
 system:
+  # Prefer false for safer local use — see config/presets/safe.yaml
   full_shell_access: true
   allowed_apps:
     - Spotify

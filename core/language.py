@@ -22,8 +22,13 @@ def check_language_alignment(config: Optional[dict[str, Any]] = None) -> Languag
     """Compare jarvis.language (TTS/persona) with listen_language (STT)."""
     cfg = config or {}
     jarvis = cfg.get("jarvis") or {}
+    voice = cfg.get("voice") or {}
     speak = str(jarvis.get("language") or "en-GB")
-    listen = str(jarvis.get("listen_language") or speak)
+    listen = str(
+        voice.get("listen_language")
+        or jarvis.get("listen_language")
+        or speak
+    )
     aligned = _primary(speak) == _primary(listen)
     warning = ""
     if not aligned:

@@ -21,26 +21,40 @@ class SelfDiagnostics:
         self._os = os_instance
 
     def run(self) -> list[DiagnosticResult]:
+        from core.parallel import run_parallel
+
+        jobs = [
+            ("event_bus", self._check_event_bus),
+            ("database", self._check_database),
+            ("memory", self._check_memory),
+            ("tasks", self._check_tasks),
+            ("permissions", self._check_permissions),
+            ("tools", self._check_tools),
+            ("audit", self._check_audit),
+            ("automation", self._check_automation),
+            ("projects", self._check_projects),
+            ("backup", self._check_backup),
+            ("planner", self._check_planner),
+            ("execution", self._check_execution),
+            ("degraded", self._check_degraded),
+            ("browser", self._check_browser),
+            ("vision", self._check_vision),
+            ("embeddings", self._check_embeddings),
+            ("mcp", self._check_mcp),
+            ("language", self._check_language),
+            ("autonomy", self._check_autonomy),
+            ("storage", self._check_storage),
+        ]
+        completed = run_parallel(jobs, max_workers=min(8, len(jobs)))
         results: list[DiagnosticResult] = []
-        results.append(self._check_event_bus())
-        results.append(self._check_database())
-        results.append(self._check_memory())
-        results.append(self._check_tasks())
-        results.append(self._check_permissions())
-        results.append(self._check_tools())
-        results.append(self._check_audit())
-        results.append(self._check_automation())
-        results.append(self._check_projects())
-        results.append(self._check_backup())
-        results.append(self._check_planner())
-        results.append(self._check_execution())
-        results.append(self._check_degraded())
-        results.append(self._check_browser())
-        results.append(self._check_vision())
-        results.append(self._check_embeddings())
-        results.append(self._check_mcp())
-        results.append(self._check_language())
-        results.append(self._check_autonomy())
+        for name, _fn in jobs:
+            value = completed.get(name)
+            if isinstance(value, DiagnosticResult):
+                results.append(value)
+            elif isinstance(value, BaseException):
+                results.append(DiagnosticResult(name, False, str(value)))
+            else:
+                results.append(DiagnosticResult(name, False, "missing result"))
         return results
 
     def summary(self) -> dict[str, Any]:
@@ -322,6 +336,24 @@ class SelfDiagnostics:
                 "max_agent_steps": steps,
             },
         )
+
+    def _check_storage(self) -> DiagnosticResult:
+        db = getattr(self._os, "db", None)
+        if db is None:
+            return DiagnosticResult("storage", False, "not initialized")
+        try:
+            from storage.backend import StorageBackend, backend_kind
+
+            kind = backend_kind(db)
+            ok_proto = isinstance(db, StorageBackend)
+            return DiagnosticResult(
+                "storage",
+                True,
+                f"backend={kind} protocol={'ok' if ok_proto else 'partial'}",
+                {"kind": kind, "protocol": ok_proto},
+            )
+        except Exception as err:
+            return DiagnosticResult("storage", False, str(err))
 
 
 def _version_payload() -> dict[str, str]:

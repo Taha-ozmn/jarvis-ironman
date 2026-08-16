@@ -1028,6 +1028,14 @@ def start_ui_server(
             return {"available": False, "reason": "JARVIS 2.0 core not loaded"}
         return core.os_v2.command_center()
 
+    def _health_provider() -> dict:
+        if core.os_v2 is None:
+            return {"ok": False, "reason": "JARVIS 2.0 core not loaded"}
+        try:
+            return core.os_v2.health()
+        except Exception as err:
+            return {"ok": False, "error": str(err)}
+
     def _on_confirm(confirm_id: str, approved: bool) -> bool:
         if core.os_v2 is None:
             return False
@@ -1041,6 +1049,7 @@ def start_ui_server(
         desktop_mode=desktop_mode,
         telemetry_interval=interval,
         data_provider=_data_provider,
+        health_provider=_health_provider,
         command_center_interval=cc_interval,
         on_confirm=_on_confirm,
     )
@@ -1063,10 +1072,23 @@ def start_ui_server(
                 core.ui.send_confirm_request(pending.to_dict())
                 core.ui.send_command_center()
 
+        def _on_plan_progress(event) -> None:
+            if not core.ui:
+                return
+            payload = getattr(event, "payload", None) or {}
+            if not isinstance(payload, dict):
+                return
+            core.ui.send_plan_progress(payload)
+
         core.os_v2.set_ui_hooks(
             on_level_notify=_level_notify,
             on_confirm_pending=_confirm_pending,
         )
+        try:
+            # plan.progress is the coalesced HUD stream (started/step/terminal)
+            core.os_v2.bus.subscribe("plan.progress", _on_plan_progress)
+        except Exception:
+            pass
 
     thread = threading.Thread(target=core.ui.run, daemon=True)
     thread.start()

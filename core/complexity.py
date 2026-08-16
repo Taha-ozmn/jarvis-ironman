@@ -47,6 +47,22 @@ _CHAT_EXACT = frozenset(
         "bye",
         "görüşürüz",
         "gorusuruz",
+        "ok",
+        "okay",
+        "tamam",
+        "yes",
+        "yep",
+        "no",
+        "nope",
+        "evet",
+        "hayır",
+        "hayir",
+        "hmm",
+        "hm",
+        "ne",
+        "anladım",
+        "anladim",
+        "peki",
     }
 )
 
@@ -81,7 +97,36 @@ _SIMPLE_PHRASES = (
     "sesi kıs",
     "sesi kis",
     "mute",
+    "unmute",
     "sessiz",
+    "list tasks",
+    "görevler",
+    "gorevler",
+    "show tasks",
+    "list files",
+    "dosyaları listele",
+    "dosyalari listele",
+    "stop",
+    "dur",
+    "be quiet",
+    "weather",
+    "hava durumu",
+)
+
+# Short local tool intents — keep off Cursor even if ≤3 words
+_SIMPLE_EXACT = frozenset(
+    {
+        "stop",
+        "dur",
+        "mute",
+        "unmute",
+        "status",
+        "diagnostics",
+        "tasks",
+        "görevler",
+        "gorevler",
+        "weather",
+    }
 )
 
 _AUTONOMOUS_HINTS = (
@@ -137,6 +182,9 @@ def classify_task_complexity(text: str) -> TaskComplexity:
     if lower in _CHAT_EXACT or any(p in lower for p in _CHAT_PHRASES):
         return TaskComplexity.CHAT
 
+    if lower in _SIMPLE_EXACT or any(p in lower for p in _SIMPLE_PHRASES):
+        return TaskComplexity.SIMPLE
+
     if any(h in lower for h in _AUTONOMOUS_HINTS):
         return TaskComplexity.AUTONOMOUS
 
@@ -162,16 +210,11 @@ def classify_task_complexity(text: str) -> TaskComplexity:
     ):
         return TaskComplexity.COMPLEX
 
-    if any(p in lower for p in _SIMPLE_PHRASES):
-        return TaskComplexity.SIMPLE
-
     if looks_like_action(lower):
         return TaskComplexity.MEDIUM
 
     # Short follow-ups / vague → medium (may need context + Cursor)
     if len(lower.split()) <= 3:
-        if lower in _CHAT_EXACT:
-            return TaskComplexity.CHAT
         return TaskComplexity.MEDIUM
 
     # Default conversational second-brain

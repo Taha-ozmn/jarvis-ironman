@@ -1,0 +1,12 @@
+# Sample automation pack — loaded idempotently by name at OS start.
+# See docs/AUTOMATION.md
+
+name: Pack — morning status
+enabled: false
+trigger:
+  type: daily
+  hour: 9
+  minute: 0
+action:
+  type: briefing
+  force: false

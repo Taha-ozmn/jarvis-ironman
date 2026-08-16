@@ -38,6 +38,12 @@ class ComplexityTests(unittest.TestCase):
             self.assertEqual(c, TaskComplexity.SIMPLE, phrase)
             self.assertFalse(allows_cursor(c), phrase)
 
+    def test_fillers_never_cursor(self) -> None:
+        for phrase in ("ok", "tamam", "list tasks", "stop"):
+            c = classify_task_complexity(phrase)
+            self.assertIn(c, (TaskComplexity.CHAT, TaskComplexity.SIMPLE), phrase)
+            self.assertFalse(allows_cursor(c), phrase)
+
     def test_complex_allows_cursor(self) -> None:
         c = classify_task_complexity("bu projede authentication bug'ını fix et")
         self.assertEqual(c, TaskComplexity.COMPLEX)

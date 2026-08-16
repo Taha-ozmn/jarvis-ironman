@@ -89,6 +89,7 @@ class ExecutionEngine:
         self._paused_plan: Optional[tuple[Plan, int]] = None
         self._cancel_token = CancellationToken()
         self.last_evidence: list[ExecutionEvidence] = []
+        self.last_plan_progress: Optional[dict[str, Any]] = None
 
     def cancel_active_plan(self, reason: str = "user_cancel") -> bool:
         """Signal cancel for the in-flight plan (cooperative)."""
@@ -202,6 +203,29 @@ class ExecutionEngine:
         start = max(0, int(start_at))
         self._cancel_token.reset()
         set_active_token(self._cancel_token)
+        total = len(plan.steps)
+        self._set_plan_progress(
+            {
+                "plan_id": plan.plan_id,
+                "goal": plan.goal[:120],
+                "step": start,
+                "total": total,
+                "tool": "",
+                "description": "starting",
+                "phase": "started",
+                "ok": None,
+            }
+        )
+        self.bus.publish(
+            "plan.started",
+            {
+                "plan_id": plan.plan_id,
+                "goal": plan.goal[:160],
+                "total": total,
+                "start_at": start,
+            },
+            source="execution_engine",
+        )
 
         try:
             for idx in range(start, len(plan.steps)):
@@ -211,6 +235,18 @@ class ExecutionEngine:
                         stopped=f"Cancelled at step {idx + 1}.",
                     )
                     self._update_task_status(plan, "cancelled")
+                    self._set_plan_progress(
+                        {
+                            "plan_id": plan.plan_id,
+                            "goal": plan.goal[:120],
+                            "step": idx,
+                            "total": total,
+                            "tool": "",
+                            "description": self._cancel_token.reason or "cancelled",
+                            "phase": "cancelled",
+                            "ok": False,
+                        }
+                    )
                     self.bus.publish(
                         "plan.cancelled",
                         {
@@ -224,7 +260,7 @@ class ExecutionEngine:
                         ok=False,
                         plan_id=plan.plan_id,
                         completed=idx,
-                        total=len(plan.steps),
+                        total=total,
                         speech=speech,
                         stopped_reason=self._cancel_token.reason or "cancelled",
                         resume_from=idx,
@@ -232,6 +268,30 @@ class ExecutionEngine:
                     )
 
                 step = plan.steps[idx]
+                self._set_plan_progress(
+                    {
+                        "plan_id": plan.plan_id,
+                        "goal": plan.goal[:120],
+                        "step": idx + 1,
+                        "total": total,
+                        "tool": step.tool_name,
+                        "description": step.description or step.tool_name,
+                        "phase": "running",
+                        "ok": None,
+                    }
+                )
+                self.bus.publish(
+                    "plan.step.progress",
+                    {
+                        "plan_id": plan.plan_id,
+                        "step": idx + 1,
+                        "total": total,
+                        "tool": step.tool_name,
+                        "description": step.description or step.tool_name,
+                        "phase": "started",
+                    },
+                    source="execution_engine",
+                )
                 outcome = self._run_step_with_retries(step, requested_by=requested_by)
                 results.append(
                     {
@@ -241,6 +301,32 @@ class ExecutionEngine:
                         "data": outcome.data if isinstance(outcome.data, str) else None,
                         "error": outcome.error,
                         "evidence": outcome.evidence,
+                    }
+                )
+                self.bus.publish(
+                    "plan.step.progress",
+                    {
+                        "plan_id": plan.plan_id,
+                        "step": idx + 1,
+                        "total": total,
+                        "tool": step.tool_name,
+                        "description": step.description or step.tool_name,
+                        "phase": "completed" if outcome.ok else "failed",
+                        "ok": outcome.ok,
+                        "error": outcome.error,
+                    },
+                    source="execution_engine",
+                )
+                self._set_plan_progress(
+                    {
+                        "plan_id": plan.plan_id,
+                        "goal": plan.goal[:120],
+                        "step": idx + 1,
+                        "total": total,
+                        "tool": step.tool_name,
+                        "description": step.description or step.tool_name,
+                        "phase": "completed" if outcome.ok else "failed",
+                        "ok": outcome.ok,
                     }
                 )
                 if outcome.ok and isinstance(outcome.data, str) and outcome.data.strip():
@@ -255,6 +341,18 @@ class ExecutionEngine:
                         stopped=f"Paused at step {idx + 1}: confirmation required.",
                     )
                     self._update_task_status(plan, "waiting")
+                    self._set_plan_progress(
+                        {
+                            "plan_id": plan.plan_id,
+                            "goal": plan.goal[:120],
+                            "step": idx + 1,
+                            "total": total,
+                            "tool": step.tool_name,
+                            "description": "confirmation required",
+                            "phase": "paused",
+                            "ok": False,
+                        }
+                    )
                     self.bus.publish(
                         "plan.paused",
                         {"plan_id": plan.plan_id, "step": idx, "reason": "confirmation"},
@@ -264,7 +362,7 @@ class ExecutionEngine:
                         ok=False,
                         plan_id=plan.plan_id,
                         completed=idx,
-                        total=len(plan.steps),
+                        total=total,
                         speech=speech,
                         stopped_reason="confirmation_required",
                         resume_from=idx,
@@ -277,6 +375,18 @@ class ExecutionEngine:
                         stopped=f"Stopped at step {idx + 1} ({step.tool_name}): {outcome.error}",
                     )
                     self._update_task_status(plan, "failed")
+                    self._set_plan_progress(
+                        {
+                            "plan_id": plan.plan_id,
+                            "goal": plan.goal[:120],
+                            "step": idx + 1,
+                            "total": total,
+                            "tool": step.tool_name,
+                            "description": (outcome.error or "failed")[:160],
+                            "phase": "failed",
+                            "ok": False,
+                        }
+                    )
                     self.bus.publish(
                         "plan.failed",
                         {"plan_id": plan.plan_id, "step": idx, "error": outcome.error},
@@ -286,7 +396,7 @@ class ExecutionEngine:
                         ok=False,
                         plan_id=plan.plan_id,
                         completed=idx,
-                        total=len(plan.steps),
+                        total=total,
                         speech=speech,
                         stopped_reason=outcome.error or "step_failed",
                         resume_from=idx,
@@ -298,21 +408,37 @@ class ExecutionEngine:
                 if self._paused_plan and self._paused_plan[0].plan_id == plan.plan_id:
                     self._paused_plan = None
             speech = self._compose_speech(speeches, stopped="Plan complete.")
+            self._set_plan_progress(
+                {
+                    "plan_id": plan.plan_id,
+                    "goal": plan.goal[:120],
+                    "step": total,
+                    "total": total,
+                    "tool": "",
+                    "description": "complete",
+                    "phase": "completed",
+                    "ok": True,
+                }
+            )
             self.bus.publish(
                 "plan.completed",
-                {"plan_id": plan.plan_id, "steps": len(plan.steps)},
+                {"plan_id": plan.plan_id, "steps": total},
                 source="execution_engine",
             )
             return PlanRunResult(
                 ok=True,
                 plan_id=plan.plan_id,
-                completed=len(plan.steps),
-                total=len(plan.steps),
+                completed=total,
+                total=total,
                 speech=speech,
                 step_results=results,
             )
         finally:
             set_active_token(None)
+
+    def _set_plan_progress(self, payload: dict[str, Any]) -> None:
+        self.last_plan_progress = dict(payload)
+        self.bus.publish("plan.progress", payload, source="execution_engine")
 
     def resume_paused_plan(self) -> Optional[PlanRunResult]:
         with self._plan_lock:

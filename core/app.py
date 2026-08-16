@@ -278,10 +278,24 @@ class JarvisOS:
     def start_background(self) -> None:
         """Start automation scheduler (daemon). Safe if already started."""
         try:
+            self._load_automation_packs()
             self.automation.start()
             self._ensure_default_briefing_automation()
         except Exception:
             logger.exception("Failed to start automation scheduler")
+
+    def _load_automation_packs(self) -> None:
+        j2 = self.config.get("jarvis2", {})
+        packs_rel = j2.get("automation_packs_dir", "config/automation_packs")
+        packs_dir = (self.root / str(packs_rel)).resolve()
+        try:
+            from automation.packs import load_automation_packs
+
+            loaded = load_automation_packs(self.automation, packs_dir)
+            if loaded:
+                logger.info("automation packs loaded: %s", ", ".join(loaded))
+        except Exception:
+            logger.exception("automation pack load failed (isolated)")
 
     def handle_turn(
         self,

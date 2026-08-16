@@ -695,6 +695,31 @@
       showPermissionToast._t = setTimeout(() => permToast.classList.remove('visible'), 4500);
     }
 
+    function updatePlanProgress(plan) {
+      if (!plan) return;
+      const step = plan.step || 0;
+      const total = plan.total || 0;
+      const tool = plan.tool || plan.description || '';
+      const phase = plan.phase || 'running';
+      const detail = total
+        ? `Plan ${step}/${total}${tool ? ' · ' + tool : ''} (${phase})`
+        : `Plan ${phase}`;
+      setStatus(
+        phase === 'failed' || phase === 'cancelled' ? 'error' : 'thinking',
+        detail,
+      );
+      const summary = document.getElementById('cc-summary');
+      if (summary && total) {
+        const bit = `PLAN <span>${step}/${total}</span> ${String(phase).toUpperCase()}` +
+          (tool ? ` <span>${tool}</span>` : '');
+        if (summary.innerHTML.includes('PLAN')) {
+          summary.innerHTML = summary.innerHTML.replace(/·\s*PLAN[\s\S]*$/, ' · ' + bit);
+        } else if (summary.textContent !== 'CORE OFFLINE') {
+          summary.innerHTML = summary.innerHTML + ' · ' + bit;
+        }
+      }
+    }
+
     function showConfirmModal(payload) {
       pendingConfirmId = payload.id;
       confirmAction.textContent = payload.action || 'dangerous action';
@@ -747,11 +772,19 @@
       }
       const s = data.summary || {};
       const cur = s.current_task ? `#${s.current_task.id} ${s.current_task.title}` : 'NONE';
+      const plan = data.plan_progress || s.plan_progress;
+      let planBit = '';
+      if (plan && plan.total) {
+        const phase = (plan.phase || 'running').toUpperCase();
+        planBit = ` · PLAN <span>${plan.step || 0}/${plan.total}</span> ${phase}`;
+        if (plan.tool) planBit += ` <span>${plan.tool}</span>`;
+      }
       summary.innerHTML =
         `TASK <span>${cur}</span> · OPEN <span>${s.open_tasks || 0}</span> · ` +
         `AUTO <span>${s.active_automations || 0}</span> · ` +
         `DIAG <span>${s.diagnostics_ok ? 'OK' : 'DEGRADED'}</span>` +
-        (s.pending_confirms ? ` · CONFIRM <span>${s.pending_confirms}</span>` : '');
+        (s.pending_confirms ? ` · CONFIRM <span>${s.pending_confirms}</span>` : '') +
+        planBit;
 
       renderList(document.getElementById('pane-tasks'), data.tasks, (t) =>
         t.error ? `<div class="cc-item">${t.error}</div>` :
@@ -994,6 +1027,9 @@
         if (data.type === 'mic_state') setUserMicPaused(!data.enabled, { notifyServer: false });
         if (data.type === 'telemetry') updateTelemetry(data.data);
         if (data.type === 'command_center') updateCommandCenter(data.data);
+        if (data.type === 'plan_progress' && data.data) {
+          updatePlanProgress(data.data);
+        }
         if (data.type === 'permission_notice') {
           showPermissionToast(data.level || 2, data.tool || 'tool', data.detail || '');
         }

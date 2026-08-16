@@ -35,6 +35,7 @@ class JarvisUI:
         data_provider: Optional[DataProvider] = None,
         command_center_interval: float = 5.0,
         on_confirm: Optional[ConfirmHandler] = None,
+        health_provider: Optional[DataProvider] = None,
     ) -> None:
         self.port = port
         self.mic_config = mic_config or {}
@@ -44,6 +45,7 @@ class JarvisUI:
         self.telemetry_interval = telemetry_interval
         self.command_center_interval = max(2.0, float(command_center_interval))
         self.data_provider = data_provider
+        self.health_provider = health_provider
         self.on_confirm = on_confirm
         self.on_mic_control: Optional[Callable[[bool, bool], None]] = None
         self._mic_enabled = True
@@ -56,6 +58,7 @@ class JarvisUI:
         self._app.router.add_get("/", self._index)
         self._app.router.add_get("/ws", self._websocket)
         self._app.router.add_get("/api/command-center", self._api_command_center)
+        self._app.router.add_get("/api/health", self._api_health)
 
     async def _index(self, request: web.Request) -> web.Response:
         html = (UI_DIR / "index.html").read_text(encoding="utf-8")
@@ -64,6 +67,26 @@ class JarvisUI:
     async def _api_command_center(self, request: web.Request) -> web.Response:
         payload = self._snapshot()
         return web.json_response(payload)
+
+    async def _api_health(self, request: web.Request) -> web.Response:
+        """Lightweight production probe — 200 when ok, 503 when degraded."""
+        try:
+            if self.health_provider:
+                payload = self.health_provider()
+            elif self.data_provider:
+                snap = self.data_provider()
+                payload = snap.get("diagnostics") if isinstance(snap, dict) else None
+                if not isinstance(payload, dict):
+                    payload = {
+                        "ok": bool(snap.get("available")) if isinstance(snap, dict) else False,
+                        "source": "command_center",
+                    }
+            else:
+                payload = {"ok": True, "note": "no health provider"}
+        except Exception as err:
+            return web.json_response({"ok": False, "error": str(err)}, status=503)
+        status = 200 if payload.get("ok") else 503
+        return web.json_response(payload, status=status)
 
     async def _websocket(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse()
@@ -208,6 +231,10 @@ class JarvisUI:
 
     def send_confirm_request(self, payload: dict[str, Any]) -> None:
         self._emit({"type": "confirm_request", "data": payload})
+
+    def send_plan_progress(self, payload: dict[str, Any]) -> None:
+        """Stream plan step progress to HUD clients (U-01)."""
+        self._emit({"type": "plan_progress", "data": payload})
 
     def _emit(self, payload: dict[str, Any]) -> None:
         if not self._clients or not self._loop:

@@ -26,7 +26,11 @@ class VerifyOutcome:
 ALWAYS_VERIFY_TOOLS = frozenset(
     {
         "git.commit",
+        "git.add",
+        "git.push",
         "fs.move",
+        "fs.write",
+        "fs.create",
         "dev.run_tests",
         "system.backup",
         "system.open_app",
@@ -55,8 +59,14 @@ def verify_tool_result(
     try:
         if tool_name == "git.commit":
             return _verify_git_commit(arguments, working_dir)
+        if tool_name == "git.add":
+            return _verify_git_add(arguments, working_dir)
+        if tool_name == "git.push":
+            return _verify_git_push(arguments, result, working_dir)
         if tool_name == "fs.move":
             return _verify_fs_move(arguments)
+        if tool_name in ("fs.write", "fs.create"):
+            return _verify_fs_path_exists(arguments, working_dir)
         if tool_name == "dev.run_tests":
             # Result already encodes exit status
             return VerifyOutcome(ok=True, message="tests reported ok")
@@ -84,16 +94,28 @@ def verify_tool_result(
     return VerifyOutcome(ok=True, message="ok")
 
 
+def _resolve_cwd(
+    arguments: dict[str, Any],
+    working_dir: Optional[Callable[[], Path]],
+) -> Path:
+    override = str(arguments.get("path") or arguments.get("cwd") or "").strip()
+    if override and Path(override).expanduser().is_dir():
+        return Path(override).expanduser().resolve()
+    if working_dir:
+        try:
+            return Path(working_dir()).expanduser().resolve()
+        except Exception:
+            pass
+    return Path.cwd()
+
+
 def _verify_git_commit(
     arguments: dict[str, Any],
     working_dir: Optional[Callable[[], Path]],
 ) -> VerifyOutcome:
     import subprocess
 
-    cwd = working_dir() if working_dir else Path.cwd()
-    override = str(arguments.get("path") or "").strip()
-    if override:
-        cwd = Path(override).expanduser().resolve()
+    cwd = _resolve_cwd(arguments, working_dir)
     try:
         proc = subprocess.run(
             ["git", "log", "-1", "--oneline"],
@@ -110,6 +132,72 @@ def _verify_git_commit(
     return VerifyOutcome(ok=True, message=(proc.stdout or "").strip()[:120])
 
 
+def _verify_git_add(
+    arguments: dict[str, Any],
+    working_dir: Optional[Callable[[], Path]],
+) -> VerifyOutcome:
+    import subprocess
+
+    cwd = _resolve_cwd(arguments, working_dir)
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception as err:
+        return VerifyOutcome(ok=False, message=str(err), alternate="Check git repo path")
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "git diff --cached failed").strip()
+        return VerifyOutcome(ok=False, message=err[:300], alternate="Retry git.add")
+    staged = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    if not staged:
+        return VerifyOutcome(
+            ok=False,
+            message="Nothing staged after git.add",
+            alternate="Check pathspecs or working tree",
+        )
+    return VerifyOutcome(ok=True, message=f"staged {len(staged)} path(s)")
+
+
+def _verify_git_push(
+    arguments: dict[str, Any],
+    result: ToolResult,
+    working_dir: Optional[Callable[[], Path]],
+) -> VerifyOutcome:
+    """Trust explicit push success speech; otherwise check branch is not ahead."""
+    import subprocess
+
+    data = result.data if isinstance(result.data, str) else ""
+    lower = data.lower()
+    if any(w in lower for w in ("pushed", "up-to-date", "everything up-to-date", "ok")):
+        return VerifyOutcome(ok=True, message=data[:120] or "push ok")
+    cwd = _resolve_cwd(arguments, working_dir)
+    try:
+        proc = subprocess.run(
+            ["git", "status", "-sb"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception as err:
+        return VerifyOutcome(ok=False, message=str(err), alternate="Check remote / network")
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "git status failed").strip()
+        return VerifyOutcome(ok=False, message=err[:300], alternate="Retry git.push")
+    line = (proc.stdout or "").splitlines()[0] if (proc.stdout or "").strip() else ""
+    if "ahead" in line.lower():
+        return VerifyOutcome(
+            ok=False,
+            message=f"Still ahead after push: {line[:120]}",
+            alternate="Check remote auth or retry push",
+        )
+    return VerifyOutcome(ok=True, message=line[:120] or "push verified")
+
+
 def _verify_fs_move(arguments: dict[str, Any]) -> VerifyOutcome:
     dst = str(arguments.get("dst") or "").strip()
     if not dst:
@@ -121,6 +209,28 @@ def _verify_fs_move(arguments: dict[str, Any]) -> VerifyOutcome:
         ok=False,
         message=f"Destination missing after move: {path}",
         alternate="Retry move or check permissions",
+    )
+
+
+def _verify_fs_path_exists(
+    arguments: dict[str, Any],
+    working_dir: Optional[Callable[[], Path]],
+) -> VerifyOutcome:
+    raw = str(arguments.get("path") or "").strip()
+    if not raw:
+        return VerifyOutcome(ok=False, message="path missing", alternate="Provide path")
+    path = Path(raw).expanduser()
+    if not path.is_absolute() and working_dir:
+        try:
+            path = (Path(working_dir()) / path).resolve()
+        except Exception:
+            path = path.expanduser()
+    if path.exists():
+        return VerifyOutcome(ok=True, message=f"exists: {path.name}")
+    return VerifyOutcome(
+        ok=False,
+        message=f"Path missing after write/create: {path}",
+        alternate="Retry write or check permissions",
     )
 
 

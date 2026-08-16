@@ -1,40 +1,74 @@
-# JARVIS 2.0 — Roadmap (complete)
+# JARVIS 2.0 — Roadmap (14 master phases)
 
-**Kaynak:** `docs/ARCHITECTURE_AUDIT.md`  
-**Ölçüt:** Doğrulanmış icra; ham `Could not open` yok; sonsuz retry yok; CHAT/SIMPLE Cursor yok.
+**Source:** Master Engineering Spec §77–80 + live audit.
 
----
-
-## All phases — Completed
-
-| Phase | IDs | Status |
-|-------|-----|--------|
-| 0 Audit | P0-AUDIT | Done |
-| 1 Stability | S-01…S-06 | Done |
-| 2 Orchestrator | O-01…O-03 | Done |
-| 3 Tools/plugins | T-01 | Done |
-| 4 Tasks/cancel | K-02, K-03 | Done |
-| 5 Memory | M-01 | Done |
-| 6 Model/degraded | R-01, P-01 | Done |
-| 7 Evidence/verify | V-01…V-04 | Done |
-| 8 HUD/automation/health | U-01…U-04, H-01, H-02, A-01 | Done |
-| Decision | O-04 (`DecisionEngine`) | Done |
-| CI / Playwright opt | V-05 | Done |
+Statuses: `Completed` | `Partial` | `Next` | `Future`
 
 ---
 
-## Docs
+## Completed
 
-ARCHITECTURE, ARCHITECTURE_AUDIT, AUTOMATION, ERROR_RECOVERY, MEMORY, MODEL_ROUTING, PRODUCTION, SECURITY, TESTING, TOOLS, ROADMAP.
+| ID | Phase | Description |
+|----|------:|-------------|
+| P0 | 0 | Architecture audit |
+| P1 | 1 | Stability (open, recovery, retries) |
+| P2 | 2 | Orchestrator (`handle_turn` + DecisionEngine) |
+| P3 | 3 | Tools / plugins / validate |
+| P4 | 4 | Task engine / cancel / resume |
+| P5 | 5 | Hybrid memory retrieval |
+| P6 | 6 | Model router + degraded |
+| P7 | 7 | Evidence + verify |
+| P8 | 8 | HUD stream + PLAN timeline |
+| P10 | 10 | Automation engine + YAML packs |
+| P12 | 12 | Unit/chaos + GitHub CI |
 
 ---
 
-## Out of scope (by design)
+## Partial (in progress)
 
-Full rewrite · forced PostgreSQL · removing voice/HUD/Cursor · inventing a second overlapping router.
+| ID | Phase | Gap | Acceptance |
+|----|------:|-----|------------|
+| P9 | 9 Voice | STT/TTS language align; PyAudio optional | Same language path or explicit dual |
+| P11 | 11 Security | Shell defaults still open; autonomy levels | Config presets + levels 1–4 |
+| P13 | 13 Perf | Limited parallel tool fan-out | Independent probes parallel |
+| P14 | 14 Prod | No DB abstraction / Postgres | SQLite OK; abstract later |
+| H1 | — | Brain soft-fail hang | Degraded + short wait (hardening PR) |
+
+---
+
+## Next (this iteration)
+
+| ID | Description | Priority | Dependencies | Acceptance Criteria |
+|----|-------------|----------|--------------|---------------------|
+| N-01 | Autonomy levels 1–4 in config | P0 | P11 | ✅ `jarvis2.autonomy_level` gates confirms |
+| N-02 | Plan dry-run | P0 | P4 | ✅ `dry run` / TR phrases → zero side effects |
+| N-03 | max_agent_steps budget | P0 | P4 | ✅ Plans truncated at budget |
+| N-04 | AGENT_DESIGN / DEVELOPMENT / DEPLOYMENT docs | P1 | P0 | ✅ Files present |
+| N-05 | Voice language helper | P1 | P9 | ✅ Diagnostic warns on STT/TTS mismatch |
+
+## Still next (Phase 9 / 11 / 13 / 14 deepen)
+
+| ID | Description | Priority | Acceptance |
+|----|-------------|----------|------------|
+| N-06 | Align default listen/speak language | P1 | Config + docs; dual-locale optional |
+| N-07 | Safer shell preset | P1 | `full_shell_access` false option documented |
+| N-08 | Parallel independent probes | P2 | Health/git/fs fan-out |
+| N-09 | Storage abstraction seam | P2 | Interface over SQLite |
+
+---
+
+## Phase report
 
 ```
-Branch: cursor/phase1-stability-b2cd
-PR: #2 — Phases 0–8+ complete
-Tests: unittest discover + GitHub Actions CI
+WHAT CHANGED
+  N-01…N-05: autonomy levels, dry-run, max_agent_steps, docs, language diagnostic.
+
+WHY
+  Master spec §71 / dry-run / agent loop budget without rewriting core.
+
+TEST RESULT
+  unittest discover green (incl. test_autonomy_dryrun).
+
+NEXT
+  N-06…N-09 (voice align, shell preset, parallel probes, storage seam).
 ```

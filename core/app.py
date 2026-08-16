@@ -8,6 +8,12 @@ from typing import Any, Callable, Optional
 
 from automation.engine import AutomationEngine, AutomationRule
 from brain.llm_provider import CursorProvider, build_default_router
+from core.autonomy import (
+    autonomy_policy,
+    clamp_max_agent_steps,
+    is_dry_run_request,
+    strip_dry_run_markers,
+)
 from core.backup import BackupService
 from core.command_router import CommandRouter
 from core.context_manager import ContextManager, SessionContext
@@ -72,8 +78,12 @@ class JarvisOS:
         self.memory = MemoryRepository(self.db)
         self.tasks = TaskManager(self.db)
         self.permissions = PermissionGate(PermissionLevel(max_level))
+        self.autonomy = autonomy_policy(j2.get("autonomy_level", 4))
+        self.auto_approve_dangerous = bool(j2.get("auto_approve_dangerous", False))
+        self.max_agent_steps = clamp_max_agent_steps(j2.get("max_agent_steps", 12))
+        # ConfirmationGate never blanket-approves — ExecutionEngine applies autonomy.
         self.confirmation = ConfirmationGate(
-            auto_approve=bool(j2.get("auto_approve_dangerous", False)),
+            auto_approve=False,
             default_timeout=float(j2.get("confirm_timeout", 60)),
         )
         self.audit = AuditLog(self.db)
@@ -194,6 +204,9 @@ class JarvisOS:
             tool_max_retries=tool_max_retries,
             working_dir=self.projects.working_dir,
             tasks=self.tasks,
+            autonomy=self.autonomy,
+            auto_approve_dangerous=self.auto_approve_dangerous,
+            max_agent_steps=self.max_agent_steps,
         )
         self.router = CommandRouter()
         self.decision = DecisionEngine()
@@ -472,13 +485,18 @@ class JarvisOS:
             return user_safe_speech(str(err))
 
     def _run_plan_goal(self, goal: str, *, background: bool = False) -> str:
-        plan = self.planner.create(goal)
+        dry = is_dry_run_request(goal)
+        clean_goal = strip_dry_run_markers(goal) if dry else (goal or "").strip()
+        plan = self.planner.create(clean_goal)
         if not plan.steps:
             # Not complex enough — fall through hint
             return (
                 "That looks like a simple request — try a direct command, "
                 "or say «plan and …» for multi-step work."
             )
+        if dry:
+            result = self.execution.execute_plan(plan, dry_run=True, persist_task=False)
+            return result.speech
         if background or len(plan.steps) >= 4:
             def _done(result: Any) -> None:
                 self._speak_plan_result(result)

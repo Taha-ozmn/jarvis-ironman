@@ -39,6 +39,8 @@ class SelfDiagnostics:
         results.append(self._check_vision())
         results.append(self._check_embeddings())
         results.append(self._check_mcp())
+        results.append(self._check_language())
+        results.append(self._check_autonomy())
         return results
 
     def summary(self) -> dict[str, Any]:
@@ -281,6 +283,45 @@ class SelfDiagnostics:
             )
         detail = f"runtime={status.get('runtime')} connected={connected}/{status.get('configured')}"
         return DiagnosticResult("mcp", True, detail, status)
+
+    def _check_language(self) -> DiagnosticResult:
+        try:
+            from core.language import check_language_alignment
+
+            cfg = getattr(self._os, "config", None) or {}
+            info = check_language_alignment(cfg)
+            detail = f"speak={info.speak} listen={info.listen}"
+            if not info.aligned:
+                detail = f"WARNING: {info.warning}"
+            return DiagnosticResult(
+                "language",
+                True,
+                detail,
+                {
+                    "speak": info.speak,
+                    "listen": info.listen,
+                    "aligned": info.aligned,
+                },
+            )
+        except Exception as err:
+            return DiagnosticResult("language", False, str(err))
+
+    def _check_autonomy(self) -> DiagnosticResult:
+        policy = getattr(self._os, "autonomy", None)
+        if policy is None:
+            return DiagnosticResult("autonomy", False, "not initialized")
+        steps = getattr(self._os, "max_agent_steps", None)
+        return DiagnosticResult(
+            "autonomy",
+            True,
+            f"level={policy.level} ({policy.label}) confirm>={policy.confirm_at_or_above} max_steps={steps}",
+            {
+                "level": policy.level,
+                "label": policy.label,
+                "confirm_at_or_above": policy.confirm_at_or_above,
+                "max_agent_steps": steps,
+            },
+        )
 
 
 def _version_payload() -> dict[str, str]:

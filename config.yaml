@@ -102,6 +102,10 @@ jarvis2:
   db_path: data/jarvis.db
   max_permission_level: 3
   auto_approve_dangerous: false
+  # Progressive autonomy (§71): 1=ask all … 4=auto through SYSTEM, confirm DANGEROUS
+  autonomy_level: 4
+  # Hard cap on plan steps / agent loop iterations
+  max_agent_steps: 12
   automation: true
   automation_tick_seconds: 15
   automation_max_failures: 3

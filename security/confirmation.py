@@ -19,16 +19,21 @@ class PendingConfirmation:
     details: str
     level: int = 3
     created_at: float = field(default_factory=time.time)
+    timeout: float = 60.0
     decision: Optional[bool] = None
     event: threading.Event = field(default_factory=threading.Event)
 
     def to_dict(self) -> dict[str, Any]:
+        elapsed = max(0.0, time.time() - self.created_at)
+        remaining = max(0.0, float(self.timeout) - elapsed)
         return {
             "id": self.id,
             "action": self.action,
             "details": self.details,
             "level": self.level,
             "created_at": self.created_at,
+            "timeout": float(self.timeout),
+            "remaining": round(remaining, 1),
         }
 
 
@@ -125,11 +130,13 @@ class ConfirmationGate:
         if self._on_pending is None and self._callback is None:
             return False
 
+        wait_for = self.default_timeout if timeout is None else float(timeout)
         pending = PendingConfirmation(
             id=uuid.uuid4().hex[:12],
             action=action,
             details=details or "",
             level=int(level),
+            timeout=max(0.1, wait_for),
         )
         with self._lock:
             self._pending[pending.id] = pending
@@ -141,7 +148,6 @@ class ConfirmationGate:
             except Exception:
                 pass
 
-        wait_for = self.default_timeout if timeout is None else float(timeout)
         ok = pending.event.wait(timeout=max(0.1, wait_for))
         with self._lock:
             self._pending.pop(pending.id, None)
@@ -150,6 +156,7 @@ class ConfirmationGate:
         if not ok or pending.decision is None:
             return False
         return bool(pending.decision)
+
     def _resolve_locked(self, confirm_id: str, approved: bool) -> bool:
         pending = self._pending.get(confirm_id)
         if pending is None or pending.decision is not None:

@@ -85,7 +85,11 @@ class JarvisUI:
                 payload = {"ok": True, "note": "no health provider"}
         except Exception as err:
             return web.json_response({"ok": False, "error": str(err)}, status=503)
-        status = 200 if payload.get("ok") else 503
+        if not isinstance(payload, dict):
+            payload = {"ok": False, "error": "invalid health payload"}
+        # Explicit degraded flag forces 503 even if subsystem checks passed
+        healthy = bool(payload.get("ok")) and not bool(payload.get("degraded"))
+        status = 200 if healthy else 503
         return web.json_response(payload, status=status)
 
     async def _websocket(self, request: web.Request) -> web.WebSocketResponse:

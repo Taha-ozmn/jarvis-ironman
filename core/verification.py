@@ -36,6 +36,8 @@ ALWAYS_VERIFY_TOOLS = frozenset(
         "browser.open_url",
         "browser.search",
         "browser.get_page_text",
+        "browser.fill_form",
+        "browser.click",
         "system.backup",
         "system.open_app",
     }
@@ -79,6 +81,8 @@ def verify_tool_result(
             return _verify_browser_open(arguments, result, tool_name)
         if tool_name == "browser.get_page_text":
             return _verify_browser_page_text(result)
+        if tool_name in ("browser.fill_form", "browser.click"):
+            return _verify_playwright_action(tool_name, arguments, result)
         if tool_name == "system.backup":
             path = ""
             if isinstance(result.data, dict):
@@ -288,6 +292,30 @@ def _verify_browser_page_text(result: ToolResult) -> VerifyOutcome:
         ok=False,
         message="Page text too short or empty after fetch",
         alternate="Retry URL or use browser.open_url",
+    )
+
+
+def _verify_playwright_action(
+    tool_name: str,
+    arguments: dict[str, Any],
+    result: ToolResult,
+) -> VerifyOutcome:
+    """Post-check for Playwright fill/click — only reached when result.ok."""
+    data = result.data if isinstance(result.data, str) else ""
+    lower = data.lower()
+    selector = str(arguments.get("selector") or "").strip()
+    if tool_name == "browser.fill_form":
+        if "filled" in lower or (selector and selector.lower() in lower):
+            return VerifyOutcome(ok=True, message=data[:120] or "filled")
+    if tool_name == "browser.click":
+        if "clicked" in lower or (selector and selector.lower() in lower):
+            return VerifyOutcome(ok=True, message=data[:120] or "clicked")
+    if data.strip():
+        return VerifyOutcome(ok=True, message=data[:120])
+    return VerifyOutcome(
+        ok=False,
+        message=f"{tool_name} reported empty success",
+        alternate="Retry with a valid selector or install Playwright",
     )
 
 

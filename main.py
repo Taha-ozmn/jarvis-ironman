@@ -569,9 +569,7 @@ class JarvisCore:
         if tool_reply is not None:
             return tool_reply
 
-        if self.ai_only:
-            return None
-
+        # Instant meta — always before slow Cursor brain
         meta = self.try_local_meta(command)
         if meta:
             return meta
@@ -580,31 +578,39 @@ class JarvisCore:
         if quick_reply:
             return quick_reply
 
-        # Legacy local heuristics (v2 disabled or unmatched)
-        quick = self.system.try_quick_action(command)
-        if quick:
-            return quick
+        # Action intents must execute locally — never chat-only via Cursor
+        legacy = self._try_legacy_actions(command)
+        if legacy is not None:
+            print(f"⚙️  Legacy eylem: {legacy}")
+            return legacy
 
-        direct = self.system.try_direct_app(command)
-        if direct:
-            return direct
+        if self.ai_only:
+            return None
 
-        media = self.system.try_media(command)
-        if media:
-            return media
+        return None
 
-        opened = self.system.try_open(command)
-        if opened:
-            return opened
+    def _try_legacy_actions(self, command: str) -> Optional[str]:
+        """Local Mac actions when router missed — even with ai_only."""
+        from core.open_target import looks_like_action
 
-        shell = self.system.try_shell(command)
-        if shell:
-            return shell
-
-        search = self.system.try_web_search(command)
-        if search:
-            return search
-
+        if not looks_like_action(command):
+            return None
+        for label, fn in (
+            ("quick", self.system.try_quick_action),
+            ("direct_app", self.system.try_direct_app),
+            ("media", self.system.try_media),
+            ("open", self.system.try_open),
+            ("shell", self.system.try_shell),
+            ("web_search", self.system.try_web_search),
+        ):
+            try:
+                result = fn(command)
+            except Exception as err:
+                print(f"⚠️  Legacy {label} hata: {err}")
+                continue
+            if result:
+                print(f"⚙️  Legacy/{label} çalıştı")
+                return result
         return None
 
     def _try_voice_confirmation(self, command: str) -> Optional[str]:

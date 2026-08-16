@@ -11,6 +11,14 @@ from typing import Any, Callable, Optional
 
 from core.event_bus import EventBus
 from core.planner import Plan, PlanStep
+from core.recovery import (
+    DEFAULT_MAX_RETRIES,
+    classify_error,
+    is_retryable,
+    log_failure,
+    sleep_backoff,
+    user_safe_speech,
+)
 from core.verification import should_verify, verify_tool_result
 from security.audit import AuditLog
 from security.confirmation import ConfirmationGate
@@ -55,6 +63,7 @@ class ExecutionEngine:
         *,
         on_level_notify: Optional[LevelNotifyFn] = None,
         max_retries: int = 1,
+        tool_max_retries: int = DEFAULT_MAX_RETRIES,
         working_dir: Optional[Callable[[], Path]] = None,
         tasks: Any = None,
     ) -> None:
@@ -65,13 +74,77 @@ class ExecutionEngine:
         self.confirmation = confirmation or ConfirmationGate()
         self.on_level_notify = on_level_notify
         self.max_retries = max(0, int(max_retries))
+        # Single-tool path: max attempts = tool_max_retries (capped at 3)
+        self.tool_max_retries = max(1, min(int(tool_max_retries), DEFAULT_MAX_RETRIES))
         self.working_dir = working_dir
         self.tasks = tasks
         self._plan_lock = threading.Lock()
         self._paused_plan: Optional[tuple[Plan, int]] = None
 
     def execute(self, request: ExecutionRequest) -> ToolResult:
-        return self._execute_once(request)
+        """Execute one tool with bounded retry + exponential backoff + verify."""
+        attempts = self.tool_max_retries
+        last = ToolResult(ok=False, error="no attempt")
+        for attempt in range(attempts):
+            last = self._execute_once(request)
+            if last.ok:
+                if not should_verify(request.tool_name, step_verify=False):
+                    return last
+                outcome = verify_tool_result(
+                    request.tool_name,
+                    request.arguments,
+                    last,
+                    working_dir=self.working_dir,
+                )
+                self.audit.write(
+                    action=f"verify.{request.tool_name}",
+                    level=0,
+                    success=outcome.ok,
+                    details={"message": outcome.message, "alternate": outcome.alternate},
+                )
+                if outcome.ok:
+                    return last
+                last = ToolResult(
+                    ok=False,
+                    error=user_safe_speech(
+                        f"Verification failed: {outcome.message}. {outcome.alternate}"
+                    ),
+                )
+            else:
+                # Never retry confirmation / permission denials
+                err = last.error or ""
+                if "confirmation" in err.lower() or "permission denied" in err.lower():
+                    return ToolResult(ok=False, error=user_safe_speech(err))
+                cls = classify_error(err)
+                log_failure(request.tool_name, err, error_class=cls, attempt=attempt + 1)
+                if not is_retryable(cls, err) or attempt >= attempts - 1:
+                    return ToolResult(
+                        ok=False,
+                        error=user_safe_speech(
+                            err,
+                            target=str(request.arguments.get("name") or ""),
+                            error_class=cls,
+                        ),
+                    )
+                self.audit.write(
+                    action=f"tool.retry.{request.tool_name}",
+                    level=0,
+                    success=False,
+                    details={
+                        "attempt": attempt + 1,
+                        "error_class": cls.value,
+                        "error": err[:200],
+                    },
+                )
+                sleep_backoff(attempt)
+                continue
+
+            # verify failed path — retry if attempts remain
+            if attempt < attempts - 1:
+                sleep_backoff(attempt)
+                continue
+            return last
+        return last
 
     def execute_plan(
         self,

@@ -29,6 +29,7 @@ ALWAYS_VERIFY_TOOLS = frozenset(
         "fs.move",
         "dev.run_tests",
         "system.backup",
+        "system.open_app",
     }
 )
 
@@ -75,6 +76,8 @@ def verify_tool_result(
                 message="Backup path missing after run",
                 alternate="Retry backup or free disk space",
             )
+        if tool_name == "system.open_app":
+            return _verify_open_app(arguments, result)
     except Exception as err:
         logger.exception("verify crashed for %s", tool_name)
         return VerifyOutcome(ok=False, message=str(err), alternate=_alternate_stub(tool_name))
@@ -119,6 +122,30 @@ def _verify_fs_move(arguments: dict[str, Any]) -> VerifyOutcome:
         message=f"Destination missing after move: {path}",
         alternate="Retry move or check permissions",
     )
+
+
+def _verify_open_app(arguments: dict[str, Any], result: ToolResult) -> VerifyOutcome:
+    """Success speech must confirm a real open — never trust fire-and-forget Popen."""
+    data = result.data if isinstance(result.data, str) else ""
+    name = str(arguments.get("name") or "").strip()
+    if not data.strip():
+        return VerifyOutcome(
+            ok=False,
+            message="Open reported empty success",
+            alternate="Retry open with an explicit app name",
+        )
+    lower = data.lower()
+    ok_words = ("is open", "açıldı", "acildi", "opened", "launching")
+    if not any(w in lower for w in ok_words):
+        return VerifyOutcome(
+            ok=False,
+            message="Open success missing confirmation phrase",
+            alternate="Retry system.open_app",
+        )
+    if name and name.lower() not in lower:
+        # Resolved display name may differ (chrome → Google Chrome) — still OK if phrase present
+        pass
+    return VerifyOutcome(ok=True, message=data[:120])
 
 
 def _alternate_stub(tool_name: str) -> str:

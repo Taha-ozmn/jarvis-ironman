@@ -606,21 +606,31 @@ class CommandRouter:
         return RouteMatch(ExecutionRequest("system.web_search", {"query": query}))
 
     def _open_app(self, lower: str, text: str) -> Optional[RouteMatch]:
-        open_triggers = ("aç", "open", "launch", "başlat", "baslat", "show", "göster", "goster")
-        if any(t in lower for t in open_triggers):
-            target = None
-            for word in open_triggers:
-                if word in lower:
-                    idx = lower.index(word) + len(word)
-                    target = text[idx:].strip(" .")
-                    break
-            if target:
-                # strip leading "the"
-                target = re.sub(r"^(the|uygulama|app)\s+", "", target, flags=re.I)
-                if target:
-                    return RouteMatch(
-                        ExecutionRequest("system.open_app", {"name": target})
-                    )
+        from core.open_target import extract_open_target, has_open_verb, normalize_open_target
+
+        # «açık sekme» must never become open_app with target «ık»
+        if re.search(r"(?<!\w)(?:açık|acik)\s+(?:sekme|tab|pencere)", lower):
+            return None
+
+        target = extract_open_target(text)
+        if target:
+            cleaned = normalize_open_target(target) or target
+            if cleaned.lower() in ("ık", "ik"):
+                return None
+            return RouteMatch(
+                ExecutionRequest("system.open_app", {"name": cleaned})
+            )
+
+        if has_open_verb(lower):
+            # Verb present but no parseable target — still route so tool can clarify
+            frag = re.sub(
+                r"(?i).*\b(?:açsana|açsene|açar\s+m[ıi]s[ıi]n|open|launch|başlat|baslat|göster|goster|show|aç|ac)\b\s*",
+                "",
+                text,
+            ).strip(" .")
+            frag = normalize_open_target(frag) if frag else ""
+            if frag and frag.lower() not in ("ık", "ik"):
+                return RouteMatch(ExecutionRequest("system.open_app", {"name": frag}))
 
         # bare app name: "spotify"
         if lower in self.APP_HINTS or any(lower == h for h in self.APP_HINTS):

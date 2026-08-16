@@ -137,6 +137,7 @@ class JarvisOS:
         self.mcp = MCPAdapter()
         self.planner = Planner(llm_refine=make_llm_refine(self.llm))
         max_retries = int(j2.get("plan_max_retries", 1))
+        tool_max_retries = int(j2.get("tool_max_retries", 3))
 
         self.tools = ToolRegistry()
         register_phase3_tools(
@@ -179,6 +180,7 @@ class JarvisOS:
             self.confirmation,
             on_level_notify=self._on_level_notify,
             max_retries=max_retries,
+            tool_max_retries=tool_max_retries,
             working_dir=self.projects.working_dir,
             tasks=self.tasks,
         )
@@ -292,12 +294,21 @@ class JarvisOS:
                     else "Done."
                 )
             else:
-                speech = (result.error or "That didn't work.").strip()
+                from voice.speech_clean import speak_safe
+
+                speech = speak_safe(
+                    (result.error or "That didn't work.").strip(),
+                    language=str(
+                        self.config.get("jarvis", {}).get("language", "en-GB")
+                    ),
+                )
             self.context.record_turn(resolved, speech)
             return speech
         except Exception as err:
             logger.exception("try_handle_command failed")
-            return f"Something went wrong: {err}"
+            from core.recovery import user_safe_speech
+
+            return user_safe_speech(str(err))
 
     def _run_plan_goal(self, goal: str, *, background: bool = False) -> str:
         plan = self.planner.create(goal)

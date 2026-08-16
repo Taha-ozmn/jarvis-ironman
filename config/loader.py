@@ -23,6 +23,7 @@ DEFAULT_JARVIS2 = {
     "memory_recall_limit": 4,
     "memory_recall_max_chars": 400,
     "plan_max_retries": 1,
+    "tool_max_retries": 3,
     "backup_retention": 10,
     "file_watch_enabled": True,
     "mcp": {
@@ -62,6 +63,14 @@ def ensure_jarvis2_defaults(config: dict[str, Any]) -> dict[str, Any]:
     j2["proactive"] = proactive
     j2["mcp"] = mcp
     config["jarvis2"] = j2
+
+    # Resolve workspace: "." / missing / stale absolute → repo root
+    jarvis = dict(config.get("jarvis") or {})
+    ws = str(jarvis.get("workspace") or "").strip()
+    ws_path = Path(ws).expanduser() if ws else None
+    if not ws or ws in (".", "./") or ws_path is None or not ws_path.exists():
+        jarvis["workspace"] = str(ROOT)
+        config["jarvis"] = jarvis
     return config
 
 

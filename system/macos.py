@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import datetime
+import logging
 import re
 import subprocess
+import time
 import webbrowser
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
+
+logger = logging.getLogger(__name__)
 
 
 class MacOSController:
@@ -16,9 +20,13 @@ class MacOSController:
 
     APP_ALIASES = {
         "chrome": "Google Chrome",
+        "google chrome": "Google Chrome",
+        "krom": "Google Chrome",
         "safari": "Safari",
         "spotify": "Spotify",
+        "spotifi": "Spotify",
         "cursor": "Cursor",
+        "kursor": "Cursor",
         "terminal": "Terminal",
         "finder": "Finder",
         "notes": "Notes",
@@ -26,13 +34,26 @@ class MacOSController:
         "slack": "Slack",
         "discord": "Discord",
         "youtube": "Google Chrome",
+        "yt": "Google Chrome",
         "vscode": "Visual Studio Code",
         "mail": "Mail",
         "calendar": "Calendar",
         "photos": "Photos",
         "settings": "System Settings",
         "sistem ayarları": "System Settings",
+        "sistem ayarlari": "System Settings",
         "ayarlar": "System Settings",
+    }
+
+    # Bundle / folder names under /Applications (fallback when open -a fails)
+    APP_BUNDLE_CANDIDATES = {
+        "Google Chrome": ("Google Chrome.app", "Chrome.app"),
+        "Safari": ("Safari.app",),
+        "Spotify": ("Spotify.app",),
+        "Cursor": ("Cursor.app",),
+        "Terminal": ("Terminal.app",),
+        "Visual Studio Code": ("Visual Studio Code.app", "Code.app"),
+        "System Settings": ("System Settings.app", "System Preferences.app"),
     }
 
     QUICK_PATTERNS = {
@@ -196,7 +217,12 @@ class MacOSController:
 
         resolved = self._resolve_app_name(target)
         if resolved:
-            return self._open_app(resolved)
+            msg = self._open_app(resolved)
+            if msg:
+                return msg
+            from core.recovery import user_safe_speech
+
+            return user_safe_speech(f"Could not open {resolved}", target=resolved)
 
         if target.startswith("http") or (
             "." in target and "/" not in target and " " not in target
@@ -210,18 +236,120 @@ class MacOSController:
             subprocess.run(["open", str(path)], check=True)
             return f"Opening {path.name}."
 
-        return self._open_app(target)
+        msg = self._open_app(target)
+        if msg:
+            return msg
+        from core.recovery import user_safe_speech
 
-    def _open_app(self, name: str) -> Optional[str]:
-        try:
-            subprocess.Popen(
-                ["open", "-a", name],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return f"Launching {name}."
-        except OSError:
+        return user_safe_speech(f"Could not open {target}", target=target)
+
+    def _open_app(self, name: str, *, max_attempts: int = 1) -> Optional[str]:
+        """Launch a macOS app with verify + alternate path fallback.
+
+        Never claims success without a successful ``open`` exit code.
+        Retries are owned by ExecutionEngine (tool_max_retries); this method
+        does one primary attempt plus one Applications-path alternate per call.
+        On non-macOS hosts (CI/Linux) returns None so callers can speak recovery.
+        """
+        from core.open_target import normalize_open_target
+        from core.recovery import log_failure
+
+        raw = (name or "").strip()
+        if not raw:
             return None
+        resolved = self._resolve_app_name(raw) or normalize_open_target(raw) or raw
+        # Re-alias after normalize
+        resolved = self._resolve_app_name(resolved) or resolved
+        if resolved.lower() in ("ık", "ik", "açık", "acik"):
+            log_failure("system.open_app", f"refusing garbage target: {resolved!r}")
+            return None
+
+        ok, err = self._try_open_a(resolved)
+        if ok:
+            return f"{resolved} is open."
+        last_err = err or ""
+        alt = self._applications_path(resolved)
+        if alt:
+            ok_alt, err_alt = self._try_open_path(alt)
+            if ok_alt:
+                return f"{resolved} is open."
+            last_err = err_alt or last_err
+        # Optional extra attempts only when caller asks (legacy direct use)
+        attempts = max(1, min(int(max_attempts), 3))
+        for attempt in range(1, attempts):
+            from core.recovery import backoff_seconds
+
+            time.sleep(backoff_seconds(attempt - 1))
+            ok, err = self._try_open_a(resolved)
+            if ok:
+                return f"{resolved} is open."
+            last_err = err or last_err
+        log_failure(
+            "system.open_app",
+            last_err or f"open failed for {resolved}",
+            attempt=1,
+        )
+        return None
+
+    def _try_open_a(self, app_name: str) -> tuple[bool, str]:
+        try:
+            result = subprocess.run(
+                ["open", "-a", app_name],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except FileNotFoundError:
+            return False, "open command not available on this host"
+        except (OSError, subprocess.TimeoutExpired) as err:
+            return False, str(err)
+        if result.returncode == 0:
+            return True, ""
+        err = (result.stderr or result.stdout or "").strip()
+        return False, err or f"open -a exited {result.returncode}"
+
+    def _try_open_path(self, path: Path) -> tuple[bool, str]:
+        try:
+            result = subprocess.run(
+                ["open", str(path)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired, FileNotFoundError) as err:
+            return False, str(err)
+        if result.returncode == 0:
+            return True, ""
+        err = (result.stderr or result.stdout or "").strip()
+        return False, err or f"open path exited {result.returncode}"
+
+    def _applications_path(self, app_name: str) -> Optional[Path]:
+        candidates = list(self.APP_BUNDLE_CANDIDATES.get(app_name, ()))
+        candidates.append(f"{app_name}.app")
+        roots = (
+            Path("/Applications"),
+            Path.home() / "Applications",
+            Path("/System/Applications"),
+        )
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for bundle in candidates:
+                path = root / bundle
+                if path.exists():
+                    return path
+            # Case-insensitive scan for close names
+            try:
+                lower = app_name.lower()
+                for child in root.iterdir():
+                    if child.suffix.lower() != ".app":
+                        continue
+                    stem = child.stem.lower()
+                    if stem == lower or lower in stem or stem in lower:
+                        return child
+            except OSError:
+                continue
+        return None
 
     def _close_app(self, name: str) -> str:
         resolved = self._resolve_app_name(name) or name
@@ -230,12 +358,27 @@ class MacOSController:
         return f"Closing {resolved}."
 
     def _resolve_app_name(self, target: str) -> Optional[str]:
-        lower = target.lower().strip()
+        from core.open_target import SPEECH_APP_ALIASES, normalize_open_target
+
+        lower = (target or "").lower().strip()
+        if not lower or lower in ("ık", "ik"):
+            return None
+        normalized = normalize_open_target(lower).lower() or lower
+        speech = SPEECH_APP_ALIASES.get(normalized, normalized)
+        if speech in self.APP_ALIASES:
+            return self.APP_ALIASES[speech]
         if lower in self.APP_ALIASES:
             return self.APP_ALIASES[lower]
         for alias, app in self.APP_ALIASES.items():
-            if alias in lower or lower in alias:
+            if alias == "youtube" or alias == "yt":
+                continue
+            if alias == lower or alias == speech:
                 return app
+            if len(alias) >= 4 and (alias in lower or lower in alias):
+                return app
+        # Already a proper app title
+        if (target[:1].isupper() and " " in target) or target.endswith(".app"):
+            return target.replace(".app", "")
         return None
 
     @staticmethod
@@ -291,25 +434,9 @@ class MacOSController:
 
     @staticmethod
     def _extract_target(text: str) -> Optional[str]:
-        for prefix in (
-            "jarvis aç ",
-            "jarvis open ",
-            "hey jarvis aç ",
-            "hey jarvis open ",
-            "aç ",
-            "open ",
-            "launch ",
-            "başlat ",
-            "göster ",
-            "show ",
-        ):
-            if text.lower().startswith(prefix):
-                return text[len(prefix):].strip()
-        for word in ("aç", "open", "launch", "başlat", "göster", "show"):
-            if word in text.lower():
-                idx = text.lower().index(word)
-                return text[idx + len(word):].strip()
-        return None
+        from core.open_target import extract_open_target
+
+        return extract_open_target(text)
 
     @staticmethod
     def _run(cmd: list[str]) -> None:

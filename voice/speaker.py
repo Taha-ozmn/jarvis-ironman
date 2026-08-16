@@ -131,7 +131,11 @@ class VoiceSpeaker:
 
     def say(self, text: str) -> None:
         if text and text.strip():
-            phrase = text.strip()
+            from voice.speech_clean import speak_safe
+
+            phrase = speak_safe(text.strip(), self.language)
+            if not phrase:
+                return
             if phrase == self._last_spoken:
                 return
             self._last_spoken = phrase

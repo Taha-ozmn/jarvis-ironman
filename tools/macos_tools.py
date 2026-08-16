@@ -23,13 +23,35 @@ class OpenAppTool(BaseTool):
         self._c = controller
 
     def run(self, arguments: dict[str, Any]) -> ToolResult:
+        from core.open_target import normalize_open_target
+        from core.recovery import log_failure, user_safe_speech
+
         name = str(arguments.get("name") or "").strip()
         if not name:
             return ToolResult(ok=False, error="App name required")
-        resolved = self._c._resolve_app_name(name) or name
+        cleaned = normalize_open_target(name) or name
+        if cleaned.lower() in ("ık", "ik", "açık", "acik"):
+            speech = user_safe_speech(
+                "Could not open",
+                target="",
+                language="en-GB",
+            )
+            # Clarify rather than pretending we opened something
+            speech = (
+                "I heard an open request but not which app. "
+                "Say something like «open Chrome» or «Spotify aç»."
+            )
+            return ToolResult(ok=False, error=speech)
+        resolved = self._c._resolve_app_name(cleaned) or cleaned
         msg = self._c._open_app(resolved)
         if not msg:
-            return ToolResult(ok=False, error=f"Could not open {name}")
+            log_failure("system.open_app", f"open failed for {resolved!r}")
+            speech = user_safe_speech(
+                f"Could not open {resolved}",
+                target=resolved,
+                language="en-GB",
+            )
+            return ToolResult(ok=False, error=speech)
         return ToolResult(ok=True, data=msg)
 
 

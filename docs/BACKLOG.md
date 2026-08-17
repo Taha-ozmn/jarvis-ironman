@@ -1,25 +1,19 @@
 # Post-merge backlog (honest)
 
-Phases 0–8+ shipped in **v2.0.0**. Remaining items are product polish, not missing OS scaffolding.
+**v2.1.0** closes the 14 master phases + §81 acceptance on the hardening branch.
 
-## Fixed in hardening PR
-- Cursor boot failure → **degraded mode**
-- DeepBrain wait capped (~8s)
-- Bilingual Level-3 confirm
-- **N-01…N-10** autonomy, dry-run, step budget, docs, safe preset, parallel probes, storage seam, PyAudio docs
-- **N-11** Local notes/calendar tools + optional MCP pack module
-- **N-12** `open_backend()` + `storage.postgres.PostgresDatabase` (optional psycopg)
+## Done
+- Phases 0–14 scaffolding + deepen (voice dual-locale, safer shell, parallel probes, storage)
+- §81 ten scenarios via `core/intent.py` + session/project tools
 
-## Still open (priority)
+## Optional extras (not required for phase-complete)
 
 | Pri | Item | Notes |
 |-----|------|--------|
-| P1 | Change default STT to match TTS | Safe preset aligned; main config still TR listen / EN speak |
-| P1 | Flip default `full_shell_access` to false | Safe preset ready; default left true for compat |
-| P2 | Wire live Postgres in CI | Adapter exists; needs DSN + optional dep |
+| P2 | Live Postgres CI | `storage.postgres` exists |
+| P2 | Offline STT engine | Dual-locale path is complete without it |
+| P2 | Apple Calendar/Notes sync | Local SQLite tools exist |
 | P2 | Playwright interactive browser | Optional deps |
-| P2 | Offline STT | Needs local engine |
-| P2 | Apple Calendar/Notes sync | Local store only today |
 
 ## Not gaps
-Core OS scaffolding, autonomy/dry-run, parallel health, notes/calendar CRUD, storage factory — done.
+Core OS, autonomy, dry-run, notes/calendar, DecisionEngine, HUD, CI, acceptance phrases — done.

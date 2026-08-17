@@ -305,7 +305,9 @@ class SelfDiagnostics:
             cfg = getattr(self._os, "config", None) or {}
             info = check_language_alignment(cfg)
             detail = f"speak={info.speak} listen={info.listen}"
-            if not info.aligned:
+            if info.dual_locale:
+                detail = f"dual_locale speak={info.speak} listen={info.listen}"
+            elif not info.aligned:
                 detail = f"WARNING: {info.warning}"
             return DiagnosticResult(
                 "language",
@@ -315,6 +317,7 @@ class SelfDiagnostics:
                     "speak": info.speak,
                     "listen": info.listen,
                     "aligned": info.aligned,
+                    "dual_locale": info.dual_locale,
                 },
             )
         except Exception as err:

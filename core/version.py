@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __codename__ = "Personal AI OS"
-PHASE = "0-8-complete"
+PHASE = "0-14-complete"
 
 
 def version_info() -> dict[str, str]:

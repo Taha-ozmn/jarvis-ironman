@@ -104,6 +104,10 @@ class ExecutionEngine:
         self._cancel_token.cancel(reason)
         return cancel_active(reason)
 
+    def pause_active_plan(self, reason: str = "paused") -> bool:
+        """Cancel cooperatively; persist resume point when reason is paused."""
+        return self.cancel_active_plan(reason or "paused")
+
     def execute(self, request: ExecutionRequest) -> ToolResult:
         """Execute one tool with bounded retry + exponential backoff + verify."""
         attempts = self.tool_max_retries
@@ -287,6 +291,9 @@ class ExecutionEngine:
                         },
                         source="execution_engine",
                     )
+                    if (self._cancel_token.reason or "") in ("paused", "pause"):
+                        with self._plan_lock:
+                            self._paused_plan = (plan, idx)
                     return PlanRunResult(
                         ok=False,
                         plan_id=plan.plan_id,

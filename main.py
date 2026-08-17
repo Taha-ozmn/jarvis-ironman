@@ -96,7 +96,7 @@ class JarvisCore:
         )
         sys_cfg = config.get("system", {})
         self.system = MacOSController(
-            full_shell_access=sys_cfg.get("full_shell_access", True),
+            full_shell_access=sys_cfg.get("full_shell_access", False),
         )
         self.brain = JarvisBrain(
             api_key=api_key,

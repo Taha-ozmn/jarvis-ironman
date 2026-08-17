@@ -91,7 +91,7 @@ class JarvisOS:
         )
         self.audit = AuditLog(self.db)
         self.macos = macos or MacOSController(
-            full_shell_access=sys_cfg.get("full_shell_access", True),
+            full_shell_access=bool(sys_cfg.get("full_shell_access", False)),
         )
         self._speak: Optional[SpeakFn] = None
         self._level_notify: Optional[Callable[[int, str, dict[str, Any]], None]] = None
@@ -220,11 +220,30 @@ class JarvisOS:
         self.proactive_enabled = bool(proactive_cfg.get("enabled", True))
         self.plan_speech_min_interval = float(j2.get("plan_speech_min_interval", 8.0))
         self._last_plan_speech_at: float = 0.0
+        self._last_failed_request: Optional[ExecutionRequest] = None
+        self._last_mode = None
         self._ready = True
         self._last_turn = None
         self._last_complexity = None
         self._last_request_id = None
         self._last_decision = None
+        try:
+            from tools.session_tools import register_session_tools
+
+            register_session_tools(
+                self.tools,
+                {
+                    "retry": self._session_retry,
+                    "continue": self._session_continue,
+                    "stop": self._session_stop,
+                    "pause": self._session_pause,
+                    "resume": self._session_resume,
+                    "edit_file": self._session_edit_file,
+                    "project_health": self._session_project_health,
+                },
+            )
+        except Exception:
+            logger.exception("session tools failed to register")
         self.bus.publish(
             "os.ready",
             {
@@ -464,21 +483,30 @@ class JarvisOS:
                 speech = self._run_plan_goal(goal, background=background)
                 self.context.record_turn(resolved, speech)
                 return speech
+            from core.intent import classify_intent
+
+            self._last_mode = classify_intent(resolved).mode
             result = self.execution.execute(match.request)
             if result.ok:
+                self._last_failed_request = None
+                path = match.request.arguments.get("path")
+                if path and str(match.request.tool_name).startswith("fs."):
+                    try:
+                        self.context.set_extra("last_file", str(path))
+                    except Exception:
+                        pass
                 speech = (
                     result.data.strip()
                     if isinstance(result.data, str) and result.data.strip()
                     else "Done."
                 )
             else:
-                from voice.speech_clean import speak_safe
+                self._last_failed_request = match.request
+                from core.recovery import user_safe_speech
 
-                speech = speak_safe(
+                speech = user_safe_speech(
                     (result.error or "That didn't work.").strip(),
-                    language=str(
-                        self.config.get("jarvis", {}).get("language", "en-GB")
-                    ),
+                    target=str(match.request.arguments.get("path") or match.request.arguments.get("name") or ""),
                 )
             self.context.record_turn(resolved, speech)
             return speech
@@ -563,7 +591,7 @@ class JarvisOS:
             return False
 
     def resume_paused_plan(self) -> Optional[str]:
-        """Resume a plan paused for Level-3 confirmation."""
+        """Resume a plan paused for Level-3 confirmation or pause."""
         try:
             result = self.execution.resume_paused_plan()
         except Exception:
@@ -572,6 +600,118 @@ class JarvisOS:
         if result is None:
             return None
         return result.speech
+
+    def pause_active_plan(self, reason: str = "paused") -> bool:
+        try:
+            return bool(self.execution.pause_active_plan(reason))
+        except Exception:
+            logger.exception("pause_active_plan failed")
+            return False
+
+    def _session_retry(self, arguments: dict[str, Any]) -> Any:
+        from tools.base import ToolResult
+
+        req = self._last_failed_request
+        if req is None:
+            return ToolResult(ok=False, error="No failed operation to retry.")
+        result = self.execution.execute(req)
+        if result.ok:
+            self._last_failed_request = None
+        return result
+
+    def _session_continue(self, arguments: dict[str, Any]) -> Any:
+        from tools.base import ToolResult
+
+        parts: list[str] = []
+        try:
+            open_tasks = self.tasks.list(status="running", limit=5)
+            pending = self.tasks.list(status="pending", limit=5)
+            failed = self.tasks.list(status="failed", limit=5)
+            if open_tasks:
+                parts.append("Open: " + "; ".join(f"#{t.id} {t.title}" for t in open_tasks))
+            if pending:
+                parts.append("Pending: " + "; ".join(f"#{t.id} {t.title}" for t in pending))
+            if failed:
+                parts.append("Failed: " + "; ".join(f"#{t.id} {t.title}" for t in failed))
+        except Exception:
+            logger.exception("continue: task list failed")
+        recall = self.recall_for_prompt("yesterday continue where we left off")
+        if recall:
+            parts.append(recall[:180])
+        if not parts:
+            return ToolResult(
+                ok=True,
+                data="No open thread from yesterday — say what you want to pick up.",
+            )
+        return ToolResult(ok=True, data="Picking up: " + " | ".join(parts))
+
+    def _session_stop(self, arguments: dict[str, Any]) -> Any:
+        from tools.base import ToolResult
+
+        ok = self.cancel_active_plan("user_stop")
+        if ok:
+            return ToolResult(ok=True, data="Stopped.")
+        return ToolResult(ok=True, data="Nothing running to stop.")
+
+    def _session_pause(self, arguments: dict[str, Any]) -> Any:
+        from tools.base import ToolResult
+
+        ok = self.pause_active_plan("paused")
+        if ok:
+            return ToolResult(ok=True, data="Paused. Say resume to continue.")
+        return ToolResult(ok=True, data="Nothing running to pause.")
+
+    def _session_resume(self, arguments: dict[str, Any]) -> Any:
+        from tools.base import ToolResult
+
+        speech = self.resume_paused_plan()
+        if speech:
+            return ToolResult(ok=True, data=speech)
+        return ToolResult(ok=False, error="No paused plan to resume.")
+
+    def _session_edit_file(self, arguments: dict[str, Any]) -> Any:
+        from pathlib import Path
+
+        from tools.base import ToolResult
+
+        path = str(arguments.get("path") or "").strip().strip(".")
+        if path in {".", ".."}:
+            path = ""
+        if not path:
+            try:
+                path = str(self.context.get_extra("last_file") or "")
+            except Exception:
+                path = ""
+        if not path:
+            return ToolResult(
+                ok=True,
+                data="Which file should I edit? Name the path.",
+            )
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = (self.root / path).resolve()
+        if not candidate.exists() or not candidate.is_file():
+            return ToolResult(
+                ok=True,
+                data=f"I couldn't find {path}. Which file should I edit?",
+            )
+        try:
+            preview = candidate.read_text(encoding="utf-8", errors="replace")[:160]
+        except OSError as err:
+            return ToolResult(ok=False, error=str(err))
+        return ToolResult(
+            ok=True,
+            data=f"Ready to edit {path}. Current preview: {preview}. Tell me the change.",
+        )
+
+    def _session_project_health(self, arguments: dict[str, Any]) -> Any:
+        from core.project_health import probe_project_health
+
+        include_tests = bool(arguments.get("include_tests"))
+        return probe_project_health(
+            self.projects.working_dir,
+            include_tests=include_tests,
+        )
 
     def enter_degraded_mode(self, reason: str = "model_unavailable") -> None:
         from core.degraded import get_degraded_mode

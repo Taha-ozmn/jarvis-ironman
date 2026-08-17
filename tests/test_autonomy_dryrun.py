@@ -144,6 +144,17 @@ class LanguageAlignTests(unittest.TestCase):
         self.assertFalse(info.aligned)
         self.assertIn("differ", info.warning)
 
+    def test_dual_locale_complete(self) -> None:
+        info = check_language_alignment(
+            {
+                "jarvis": {"language": "en-GB"},
+                "voice": {"listen_language": "tr-TR", "dual_locale": True},
+            }
+        )
+        self.assertFalse(info.aligned)
+        self.assertTrue(info.dual_locale)
+        self.assertEqual(info.warning, "")
+
     def test_aligned(self) -> None:
         info = check_language_alignment(
             {

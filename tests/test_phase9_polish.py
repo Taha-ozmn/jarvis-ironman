@@ -71,7 +71,7 @@ class ProductionHealthTests(unittest.TestCase):
                 self.assertTrue(health["ok"], health)
                 self.assertTrue(health.get("ready"))
                 self.assertFalse(health.get("degraded"))
-                self.assertEqual(health.get("version", {}).get("version"), "2.0.0")
+                self.assertEqual(health.get("version", {}).get("version"), "2.1.0")
                 names = {c["name"] for c in health["checks"]}
                 self.assertIn("execution", names)
                 self.assertIn("degraded_mode", names)

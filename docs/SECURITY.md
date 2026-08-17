@@ -10,7 +10,7 @@ jarvis2:
   max_agent_steps: 12
   confirm_timeout: 60
 system:
-  full_shell_access: true         # shell tool exists; still gated by level
+  full_shell_access: false        # default deny free-form shell
 ```
 
 | Autonomy | Auto-run | Confirm at |

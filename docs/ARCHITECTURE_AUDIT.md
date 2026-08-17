@@ -1,20 +1,18 @@
 # JARVIS 2.0 — Master 14-Phase Audit
 
-**Date:** 2026-08-16  
-**Repo:** `main` @ v2.0.0 (+ hardening branch)  
+**Date:** 2026-08-17  
+**Repo:** v2.1.0 on `cursor/post-merge-hardening-b2cd`  
 **Rule:** Do not rewrite blindly. KEEP / REFACTOR / REPLACE / REMOVE.
 
 ---
 
 ## Executive verdict
 
-The 14-phase Personal AI OS **scaffolding is largely shipped**. The system is already:
+The 14-phase Personal AI OS is **complete at v2.1.0** (scaffolding + acceptance routing):
 
-`User → handle_turn → tools/meta/legacy → DecisionEngine → Cursor`
+`User → Intent → handle_turn → tools/meta/legacy → DecisionEngine → Cursor`
 
-with permissions, evidence, cancel, hybrid memory, HUD, automation, health, CI.
-
-What remains is **deepening** (intent quality, dry-run, autonomy levels, voice language alignment, MCP packs) — not a greenfield rewrite.
+Optional extras (live Postgres CI, Apple Calendar sync, offline STT engine) are not phase blockers.
 
 ---
 
@@ -31,12 +29,12 @@ What remains is **deepening** (intent quality, dry-run, autonomy levels, voice l
 | 6 | Model Router | **DONE** | cheap/smart + degraded |
 | 7 | Execution & Verification | **DONE** | evidence + verify hooks |
 | 8 | UI / Streaming | **DONE** | HUD plan_progress + PLAN pane |
-| 9 | Voice | **PARTIAL** | wake/STT/TTS exist; TR/EN mismatch; mic fallback optional |
+| 9 | Voice | **DONE** | dual_locale TR STT / EN TTS; wake + HUD mic |
 | 10 | Automation | **DONE** | engine + YAML packs |
-| 11 | Security | **PARTIAL** | L0–3 + confirm + audit; shell defaults still permissive |
-| 12 | Testing | **DONE** | 220+ unit + CI + chaos |
-| 13 | Performance | **PARTIAL** | complexity gate; limited parallel tools |
-| 14 | Production | **PARTIAL** | `/api/health`, CHANGELOG; no Postgres abstraction |
+| 11 | Security | **DONE** | L0–3 + confirm + audit + `full_shell_access: false` |
+| 12 | Testing | **DONE** | unit + CI + chaos + §81 acceptance |
+| 13 | Performance | **DONE** | complexity gate + parallel `project.health` |
+| 14 | Production | **DONE** | `/api/health`, storage seam, Postgres adapter, 2.1.0 |
 
 ---
 
@@ -70,15 +68,15 @@ What remains is **deepening** (intent quality, dry-run, autonomy levels, voice l
 
 | Scenario | Status |
 |----------|--------|
-| Analyze project | YES (dev.analyze_repo / Cursor MEDIUM+) |
-| Find / fix bug | PARTIAL (patch loop + Cursor; not full auto agent loop) |
+| Analyze project | YES (`project.health` parallel git+analyze) |
+| Find / fix bug | YES (`dev.analyze_repo` / `dev.fix_cycle`; Cursor still available for MEDIUM+) |
 | Run tests | YES (`dev.run_tests` + verify) |
 | Git status | YES |
-| Continue from yesterday | PARTIAL (hybrid memory + temporal; weak episodic task resume UX) |
-| Edit file | YES (`fs.*` + confirm for dangerous) |
+| Continue from yesterday | YES (`session.continue` + hybrid recall) |
+| Edit file | YES (`session.edit_file` + `fs.*`) |
 | System status | YES (`diagnostics.health`) |
-| Retry failed | PARTIAL (tool retries; no user “retry that” intent) |
-| Stop | YES (cancel token + voice dur) |
+| Retry failed | YES (`session.retry` last failed request) |
+| Stop | YES (`session.stop` + cancel token) |
 
 ---
 

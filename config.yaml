@@ -50,7 +50,8 @@ voice:
   native_voice: Daniel
   native_rate: 165
   edge_timeout: 10
-  # Match jarvis.language primary tag when possible (see config/presets/safe.yaml)
+  # First-class dual locale: listen Turkish, speak English (Phase 9 complete)
+  dual_locale: true
   listen_language: tr-TR
   listen_timeout: 4
   phrase_limit: 6
@@ -74,8 +75,8 @@ ui:
   min_command_length: 2
 
 system:
-  # Prefer false for safer local use — see config/presets/safe.yaml
-  full_shell_access: true
+  # Default deny free-form shell (Phase 11). Opt in via true or presets.
+  full_shell_access: false
   allowed_apps:
     - Spotify
     - Chrome

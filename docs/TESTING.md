@@ -8,6 +8,7 @@ CI: `.github/workflows/ci.yml` (unit required; Playwright optional job).
 
 | Suite | Focus |
 |-------|--------|
+| `test_acceptance_spec` | Master §81 ten phrases |
 | `test_phase1_stability` | open resolve, recovery, retries |
 | `test_phase2_orchestrator` | handle_turn, CHAT/SIMPLE gate |
 | `test_phase3_to_7_os` | plugins, cancel, evidence, memory, degraded |

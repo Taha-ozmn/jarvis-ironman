@@ -28,4 +28,5 @@ Also: `GET /api/command-center` for the full HUD snapshot.
 
 - Prefer `/api/health` for load balancers / uptime monitors.
 - Voice Level-3 confirm resolves via HUD (Enter/Esc) or `evet`/`hayır`.
-- Safe autonomy: `jarvis2.auto_approve_dangerous: false` (see `docs/SECURITY.md`).
+- Safe autonomy: `jarvis2.auto_approve_dangerous: false`; `system.full_shell_access: false` (see `docs/SECURITY.md`).
+- Voice: `voice.dual_locale: true` (TR listen / EN speak) is the supported default mix.

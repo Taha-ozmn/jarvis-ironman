@@ -105,7 +105,8 @@ class RunTestsTool(BaseTool):
                 cmd = "npm test --silent"
             else:
                 cmd = f"{py} -m unittest discover -s tests -q"
-        return _run_cmd(root, cmd, timeout=float(arguments.get("timeout") or 120))
+        timeout = float(arguments.get("timeout") or 45)
+        return _run_cmd(root, cmd, timeout=timeout)
 
 
 class DevRunCommandTool(BaseTool):

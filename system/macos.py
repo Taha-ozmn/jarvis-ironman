@@ -64,7 +64,7 @@ class MacOSController:
         "mute": ["sessiz", "mute"],
     }
 
-    def __init__(self, full_shell_access: bool = True) -> None:
+    def __init__(self, full_shell_access: bool = False) -> None:
         self.full_shell_access = full_shell_access
 
     def try_shutdown(self, text: str) -> Optional[str]:

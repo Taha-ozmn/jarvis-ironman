@@ -32,15 +32,16 @@ class CommandRouter:
         if not text:
             return None
         lower = text.lower().strip()
-        for prefix in ("hey jarvis ", "ok jarvis ", "jarvis "):
+        for prefix in ("hey jarvis ", "ok jarvis ", "jarvis, ", "jarvis "):
             if lower.startswith(prefix):
                 lower = lower[len(prefix):].strip()
                 text = text[len(prefix):].strip() if text.lower().startswith(prefix) else text
 
         match = (
-            self._diagnostics(lower)
+            self._plan(lower, text)
+            or self._session(lower, text)
+            or self._diagnostics(lower)
             or self._backup(lower)
-            or self._plan(lower, text)
             or self._automation(lower, text)
             or self._briefing(lower)
             or self._projects(lower, text)
@@ -50,6 +51,7 @@ class CommandRouter:
             or self._screen(lower)
             or self._browser(lower, text)
             or self._memory(lower, text)
+            or self._calendar_notes(lower, text)
             or self._tasks(lower, text)
             or self._volume(lower)
             or self._time_date(lower)
@@ -59,6 +61,55 @@ class CommandRouter:
             or self._open_app(lower, text)
         )
         return match
+
+    def _session(self, lower: str, text: str) -> Optional[RouteMatch]:
+        from core.intent import Intent, classify_intent
+
+        classified = classify_intent(text)
+        mapping = {
+            Intent.STOP: "session.stop",
+            Intent.PAUSE: "session.pause",
+            Intent.RESUME: "session.resume",
+            Intent.RETRY: "session.retry",
+            Intent.CONTINUE: "session.continue",
+            Intent.EDIT_FILE: "session.edit_file",
+            Intent.PROJECT_ANALYSIS: "project.health",
+            Intent.BUG_FIND: "dev.analyze_repo",
+            Intent.BUG_FIX: "dev.fix_cycle",
+            Intent.RUN_TESTS: "dev.run_tests",
+            Intent.GIT_STATUS: "git.status",
+            Intent.SYSTEM_STATUS: "diagnostics.health",
+        }
+        tool = mapping.get(classified.intent)
+        if tool is None:
+            return None
+        args: dict[str, Any] = {}
+        if classified.intent == Intent.EDIT_FILE:
+            path = self._after_keywords(
+                text,
+                (
+                    "edit file",
+                    "edit this file",
+                    "edit the file",
+                    "bu dosyayı düzenle",
+                    "bu dosyayi duzenle",
+                    "dosyayı düzenle",
+                    "dosyayi duzenle",
+                ),
+            )
+            if path and path.lower() not in (
+                "this",
+                "the file",
+                "bu",
+                "şu",
+                "su",
+                ".",
+                "..",
+            ):
+                args["path"] = path
+        if classified.intent == Intent.PROJECT_ANALYSIS:
+            args["include_tests"] = "test" in lower
+        return RouteMatch(ExecutionRequest(tool, args))
 
     def _backup(self, lower: str) -> Optional[RouteMatch]:
         if any(
@@ -138,7 +189,17 @@ class CommandRouter:
         return None
 
     def _git(self, lower: str, text: str) -> Optional[RouteMatch]:
-        if any(p in lower for p in ("git status", "repo status", "repository status", "durum git")):
+        if any(
+            p in lower
+            for p in (
+                "git status",
+                "repo status",
+                "repository status",
+                "durum git",
+                "git durumunu kontrol et",
+                "git durum",
+            )
+        ):
             return RouteMatch(ExecutionRequest("git.status", {}))
         if any(p in lower for p in ("git diff", "show diff", "değişiklikler", "degisiklikler")):
             return RouteMatch(ExecutionRequest("git.diff", {}))
@@ -175,9 +236,25 @@ class CommandRouter:
             return RouteMatch(ExecutionRequest("dev.analyze_repo", {}))
         if any(
             p in lower
-            for p in ("run tests", "run the tests", "testleri çalıştır", "testleri calistir")
+            for p in (
+                "run tests",
+                "run the tests",
+                "testleri çalıştır",
+                "testleri calistir",
+            )
         ):
             return RouteMatch(ExecutionRequest("dev.run_tests", {}))
+        if any(
+            p in lower
+            for p in (
+                "hatayı düzelt",
+                "hatayi duzelt",
+                "fix the bug",
+                "fix the error",
+                "fix cycle",
+            )
+        ):
+            return RouteMatch(ExecutionRequest("dev.fix_cycle", {}))
         return None
 
     def _research(self, lower: str, text: str) -> Optional[RouteMatch]:
@@ -427,6 +504,130 @@ class CommandRouter:
             for p in ("list memories", "memories", "hatıralar", "hatiralar", "bellek listesi")
         ):
             return RouteMatch(ExecutionRequest("memory.list", {}))
+        return None
+
+    def _calendar_notes(self, lower: str, text: str) -> Optional[RouteMatch]:
+        # Don't steal "open Notes/Calendar" app launches
+        if lower.startswith("open ") or lower.startswith("aç ") or lower.startswith("ac "):
+            return None
+
+        if any(
+            p in lower
+            for p in (
+                "add note",
+                "create note",
+                "new note",
+                "note:",
+                "not ekle",
+                "not al",
+                "not yaz",
+            )
+        ) or lower.startswith("note "):
+            body = self._after_keywords(
+                text,
+                (
+                    "add note",
+                    "create note",
+                    "new note",
+                    "note:",
+                    "not ekle",
+                    "not al",
+                    "not yaz",
+                    "note",
+                ),
+            )
+            if body:
+                return RouteMatch(ExecutionRequest("notes.create", {"body": body}))
+
+        if any(
+            p in lower
+            for p in (
+                "list notes",
+                "show notes",
+                "my notes",
+                "notlar",
+                "notlarım",
+                "notlarim",
+            )
+        ):
+            return RouteMatch(ExecutionRequest("notes.list", {}))
+
+        if any(p in lower for p in ("search notes", "find note", "not ara", "notlarda ara")):
+            query = self._after_keywords(
+                text,
+                ("search notes", "find note", "not ara", "notlarda ara"),
+            )
+            return RouteMatch(
+                ExecutionRequest("notes.search", {"query": query or " "})
+            )
+
+        if any(
+            p in lower
+            for p in (
+                "calendar today",
+                "today's calendar",
+                "todays calendar",
+                "bugünkü takvim",
+                "bugunku takvim",
+                "takvim bugün",
+                "takvim bugun",
+            )
+        ):
+            return RouteMatch(ExecutionRequest("calendar.today", {}))
+
+        if any(
+            p in lower
+            for p in (
+                "list calendar",
+                "show calendar",
+                "upcoming events",
+                "takvim",
+                "etkinlikler",
+            )
+        ) and "open" not in lower:
+            return RouteMatch(ExecutionRequest("calendar.list", {}))
+
+        if any(
+            p in lower
+            for p in (
+                "add event",
+                "create event",
+                "schedule",
+                "etkinlik ekle",
+                "randevu",
+            )
+        ):
+            # «add event Meeting tomorrow 10:00» / «etkinlik ekle Toplantı yarın»
+            rest = self._after_keywords(
+                text,
+                (
+                    "add event",
+                    "create event",
+                    "schedule",
+                    "etkinlik ekle",
+                    "randevu",
+                ),
+            )
+            if not rest:
+                return None
+            # Heuristic: last token(s) may be when
+            parts = rest.rsplit(" ", 2)
+            starts = "tomorrow"
+            title = rest
+            lower_rest = rest.lower()
+            for marker in ("tomorrow", "today", "yarın", "yarin", "bugün", "bugun"):
+                if marker in lower_rest:
+                    idx = lower_rest.find(marker)
+                    title = rest[:idx].strip(" ,-") or rest
+                    starts = rest[idx:].strip()
+                    break
+            if title:
+                return RouteMatch(
+                    ExecutionRequest(
+                        "calendar.create_event",
+                        {"title": title, "starts_at": starts},
+                    )
+                )
         return None
 
     def _tasks(self, lower: str, text: str) -> Optional[RouteMatch]:

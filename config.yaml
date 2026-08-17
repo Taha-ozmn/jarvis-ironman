@@ -50,6 +50,8 @@ voice:
   native_voice: Daniel
   native_rate: 165
   edge_timeout: 10
+  # First-class dual locale: listen Turkish, speak English (Phase 9 complete)
+  dual_locale: true
   listen_language: tr-TR
   listen_timeout: 4
   phrase_limit: 6
@@ -73,7 +75,8 @@ ui:
   min_command_length: 2
 
 system:
-  full_shell_access: true
+  # Default deny free-form shell (Phase 11). Opt in via true or presets.
+  full_shell_access: false
   allowed_apps:
     - Spotify
     - Chrome
@@ -100,8 +103,16 @@ jarvis2:
   enabled: true
   soft_init: true
   db_path: data/jarvis.db
+  # Optional Postgres (pip install -r requirements-optional.txt):
+  # storage:
+  #   backend: postgres
+  #   dsn: postgresql://user:pass@localhost:5432/jarvis
   max_permission_level: 3
   auto_approve_dangerous: false
+  # Progressive autonomy (§71): 1=ask all … 4=auto through SYSTEM, confirm DANGEROUS
+  autonomy_level: 4
+  # Hard cap on plan steps / agent loop iterations
+  max_agent_steps: 12
   automation: true
   automation_tick_seconds: 15
   automation_max_failures: 3
@@ -119,8 +130,15 @@ jarvis2:
   automation_packs_dir: config/automation_packs
   mcp:
     enabled: true
-    # Live stdio MCP servers (empty = OK, diagnostics reports "no MCP servers")
+    # Live stdio MCP servers (empty = OK — local notes/calendar tools are built-in)
     servers: []
+    # Optional Calendar/Notes MCP pack (separate DB process):
+    # servers:
+    #   - name: calendar_notes
+    #     transport: stdio
+    #     command: python3
+    #     args: ["-m", "integrations.local_calendar_notes_mcp"]
+    #     permission_level: 1
     # Example:
     # servers:
     #   - name: demo

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.0 — 14-phase complete (acceptance)
+
+Branch / PR: `cursor/post-merge-hardening-b2cd` → https://github.com/Taha-ozmn/jarvis-ironman/pull/3
+
+- Intent classifier + session tools (stop / pause / resume / retry / continue / edit)
+- Parallel `project.health` (git + analyze)
+- Dual-locale voice (`voice.dual_locale: true`)
+- Safer default: `system.full_shell_access: false`
+- §81 acceptance tests (`tests/test_acceptance_spec.py`)
+
 ## 2.0.0 — Personal AI OS (Phases 0–8+)
 
 Branch / PR: `cursor/phase1-stability-b2cd` → https://github.com/Taha-ozmn/jarvis-ironman/pull/2

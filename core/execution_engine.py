@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.autonomy import AutonomyPolicy, autonomy_policy, requires_confirmation
 from core.cancellation import (
     CancellationToken,
     cancel_active,
@@ -73,6 +74,9 @@ class ExecutionEngine:
         tool_max_retries: int = DEFAULT_MAX_RETRIES,
         working_dir: Optional[Callable[[], Path]] = None,
         tasks: Any = None,
+        autonomy: Optional[AutonomyPolicy] = None,
+        auto_approve_dangerous: bool = False,
+        max_agent_steps: int = 12,
     ) -> None:
         self.registry = registry
         self.permissions = permissions
@@ -85,6 +89,9 @@ class ExecutionEngine:
         self.tool_max_retries = max(1, min(int(tool_max_retries), DEFAULT_MAX_RETRIES))
         self.working_dir = working_dir
         self.tasks = tasks
+        self.autonomy = autonomy or autonomy_policy(4)
+        self.auto_approve_dangerous = bool(auto_approve_dangerous)
+        self.max_agent_steps = max(1, min(64, int(max_agent_steps)))
         self._plan_lock = threading.Lock()
         self._paused_plan: Optional[tuple[Plan, int]] = None
         self._cancel_token = CancellationToken()
@@ -96,6 +103,10 @@ class ExecutionEngine:
         """Signal cancel for the in-flight plan (cooperative)."""
         self._cancel_token.cancel(reason)
         return cancel_active(reason)
+
+    def pause_active_plan(self, reason: str = "paused") -> bool:
+        """Cancel cooperatively; persist resume point when reason is paused."""
+        return self.cancel_active_plan(reason or "paused")
 
     def execute(self, request: ExecutionRequest) -> ToolResult:
         """Execute one tool with bounded retry + exponential backoff + verify."""
@@ -174,8 +185,31 @@ class ExecutionEngine:
         start_at: int = 0,
         persist_task: bool = True,
         requested_by: str = "planner",
+        dry_run: bool = False,
     ) -> PlanRunResult:
         """Run plan steps sequentially with per-step audit + optional verify/retry."""
+        if len(plan.steps) > self.max_agent_steps:
+            plan.steps = list(plan.steps[: self.max_agent_steps])
+            self.bus.publish(
+                "plan.truncated",
+                {
+                    "plan_id": plan.plan_id,
+                    "max_agent_steps": self.max_agent_steps,
+                },
+                source="execution_engine",
+            )
+
+        if dry_run:
+            speech = f"DRY RUN — no tools executed. {plan.summary(max_chars=400)}"
+            return PlanRunResult(
+                ok=True,
+                plan_id=plan.plan_id,
+                completed=0,
+                total=len(plan.steps),
+                speech=speech,
+                stopped_reason="dry_run",
+            )
+
         if persist_task and self.tasks is not None and plan.task_id is None:
             try:
                 meta = json.dumps(
@@ -257,6 +291,9 @@ class ExecutionEngine:
                         },
                         source="execution_engine",
                     )
+                    if (self._cancel_token.reason or "") in ("paused", "pause"):
+                        with self._plan_lock:
+                            self._paused_plan = (plan, idx)
                     return PlanRunResult(
                         ok=False,
                         plan_id=plan.plan_id,
@@ -570,7 +607,11 @@ class ExecutionEngine:
         if effective >= PermissionLevel.SYSTEM:
             self._notify_level(int(effective), tool.name, request.arguments)
 
-        if effective >= PermissionLevel.DANGEROUS:
+        if requires_confirmation(
+            effective,
+            self.autonomy,
+            auto_approve_dangerous=self.auto_approve_dangerous,
+        ):
             if not self.confirmation.require(
                 request.tool_name,
                 details=str(request.arguments),

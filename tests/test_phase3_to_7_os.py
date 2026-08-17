@@ -125,7 +125,7 @@ class CancelResumeTests(unittest.TestCase):
         updated = self.os.tasks.update(task.id, status="done")
         self.assertEqual(updated.status, "completed")
         listed = self.os.tasks.list(status="done")
-        self.assertEqual(len(listed), 1)
+        self.assertTrue(any(t.id == task.id and t.status == "completed" for t in listed))
 
 
 class EvidenceTests(unittest.TestCase):

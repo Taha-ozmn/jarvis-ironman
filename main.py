@@ -96,7 +96,7 @@ class JarvisCore:
         )
         sys_cfg = config.get("system", {})
         self.system = MacOSController(
-            full_shell_access=sys_cfg.get("full_shell_access", True),
+            full_shell_access=sys_cfg.get("full_shell_access", False),
         )
         self.brain = JarvisBrain(
             api_key=api_key,
@@ -223,6 +223,7 @@ class JarvisCore:
             self.brain.start()
             if self.ui:
                 self.ui.send_telemetry(get_telemetry(self.brain.model))
+            self._exit_degraded_if_brain_ok()
         except Exception as err:
             err_text = str(err)
             print(f"⚠️  Neural core: {err_text}")
@@ -239,10 +240,58 @@ class JarvisCore:
                     if self.ui:
                         self.ui.send_telemetry(get_telemetry(self.brain.model))
                     print("✅ Neural core bağlandı.")
+                    self._exit_degraded_if_brain_ok()
                     return
                 except Exception as retry_err:
                     print(f"⚠️  Yeniden deneme başarısız: {retry_err}")
+                    err_text = str(retry_err)
             self._set_status("error", str(err))
+            self._enter_degraded_brain_down(err_text)
+
+    def _enter_degraded_brain_down(self, reason: str) -> None:
+        """Local tools stay up; Cursor path must not hang waiting forever."""
+        if self.os_v2 is None:
+            return
+        try:
+            self.os_v2.enter_degraded_mode(f"brain_unavailable:{reason[:120]}")
+            print("🛡️  Degraded mode — local tools only until Cursor reconnects.")
+        except Exception:
+            pass
+
+    def _exit_degraded_if_brain_ok(self) -> None:
+        if self.os_v2 is None or not self.brain.is_ready():
+            return
+        try:
+            from core.degraded import get_degraded_mode
+
+            snap = get_degraded_mode().snapshot()
+            if snap.active and str(snap.reason).startswith("brain_unavailable"):
+                self.os_v2.exit_degraded_mode()
+                print("✅ Cursor online — degraded mode cleared.")
+        except Exception:
+            pass
+
+    def _ensure_brain_or_degraded(self, *, timeout: float = 8.0) -> Optional[str]:
+        """Return fallback speech if Cursor is unavailable; never block for minutes."""
+        if self.brain.is_ready():
+            self._exit_degraded_if_brain_ok()
+            return None
+        self._set_status("thinking", "Neural core connecting…")
+        ready = self.brain.wait_ready(timeout=timeout)
+        if ready:
+            self._exit_degraded_if_brain_ok()
+            return None
+        self._enter_degraded_brain_down("wait_ready_timeout")
+        return (
+            "Neural core is offline — I can still run local tools. "
+            "Try again shortly, or use a direct command."
+        )
+
+    def _confirm_speech(self, approved: bool) -> str:
+        lang = str(self.config.get("jarvis", {}).get("language", "en-GB")).lower()
+        if lang.startswith("tr"):
+            return "Onaylandı." if approved else "İptal edildi."
+        return "Confirmed." if approved else "Cancelled."
 
     def _send_boot_greeting(self) -> None:
         if self._boot_greeting_sent:
@@ -658,7 +707,7 @@ class JarvisCore:
         self.os_v2.confirmation.resolve_latest(approved)
         if self.ui:
             self.ui.send_command_center()
-        return "Confirmed." if approved else "Cancelled."
+        return self._confirm_speech(approved)
 
     def _intercept_confirmation_outside_worker(self, command: str) -> bool:
         """Used by voice loops so confirmations resolve while worker is blocked."""
@@ -671,7 +720,7 @@ class JarvisCore:
             return False
         approved = decision == "yes"
         self.os_v2.confirmation.resolve_latest(approved)
-        msg = "Confirmed." if approved else "Cancelled."
+        msg = self._confirm_speech(approved)
         print(f"🔐 Confirm: {msg}")
         try:
             self.speaker.say(msg)
@@ -738,27 +787,30 @@ class JarvisCore:
                             self._set_status("thinking", ack)
                         else:
                             self._set_status("thinking", "Processing…")
-                        if not self.brain.is_ready():
-                            self._set_status("thinking", "Neural core connecting…")
-                            self.brain.wait_ready(timeout=120)
-                        print(
-                            f"💬 DeepBrain (Cursor) [{getattr(self, '_active_request_id', '')}]"
-                        )
-                        response = self.brain.think_with_narration(
-                            command,
-                            self._jarvis_speak,
-                            work_update=self.narrator.work_update,
-                            on_complete=lambda result: self._on_task_complete(
-                                command, result,
-                            ),
-                        )
-                        if response and response not in (
-                            "That took longer than expected — shall I keep trying, sir?",
-                        ):
-                            self.brain.remember_turn(command, response)
-                            if self.os_v2 is not None:
-                                self.os_v2.ingest_conversation(command, response)
-                        self._emit_response(command, response)
+                        offline = self._ensure_brain_or_degraded(timeout=8.0)
+                        if offline:
+                            response = offline
+                            self._emit_response(command, response)
+                            self.speaker.say(response)
+                        else:
+                            print(
+                                f"💬 DeepBrain (Cursor) [{getattr(self, '_active_request_id', '')}]"
+                            )
+                            response = self.brain.think_with_narration(
+                                command,
+                                self._jarvis_speak,
+                                work_update=self.narrator.work_update,
+                                on_complete=lambda result: self._on_task_complete(
+                                    command, result,
+                                ),
+                            )
+                            if response and response not in (
+                                "That took longer than expected — shall I keep trying, sir?",
+                            ):
+                                self.brain.remember_turn(command, response)
+                                if self.os_v2 is not None:
+                                    self.os_v2.ingest_conversation(command, response)
+                            self._emit_response(command, response)
                 elif response == "SHUTDOWN_JARVIS":
                     self.speaker.say("Powering down.")
                     print("🤖 JARVIS: Powering down.\n")

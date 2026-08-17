@@ -6,3 +6,7 @@
 #
 # Without this file, browser tools use macOS `open` + urllib (read-only).
 playwright>=1.40.0
+
+# Optional Postgres storage backend (jarvis2.storage.backend: postgres):
+#   pip install 'psycopg[binary]>=3.1'
+psycopg[binary]>=3.1.0

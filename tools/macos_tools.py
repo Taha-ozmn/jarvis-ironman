@@ -142,7 +142,7 @@ class ShellTool(BaseTool):
                 ok=False,
                 error="Blocked: this command is too destructive (e.g. rm -rf /).",
             )
-        if not getattr(self._c, "full_shell_access", True):
+        if not getattr(self._c, "full_shell_access", False):
             return ToolResult(ok=False, error="Shell access is disabled in configuration.")
         try:
             from pathlib import Path

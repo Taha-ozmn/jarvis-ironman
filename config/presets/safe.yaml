@@ -1,0 +1,23 @@
+# Safer personal-machine preset (optional overlay)
+# Merge ideas into config.yaml — does not replace the main file automatically.
+#
+# Use when you want more confirmations and no free-form shell.
+#
+#   autonomy_level: 3     → SYSTEM+ needs confirm
+#   full_shell_access: false
+#   auto_approve_dangerous: false
+
+jarvis2:
+  autonomy_level: 3
+  auto_approve_dangerous: false
+  max_agent_steps: 12
+  max_permission_level: 3
+  confirm_timeout: 60
+
+system:
+  full_shell_access: false
+
+jarvis:
+  # Prefer matching STT + TTS primary language
+  language: en-GB
+  listen_language: en-GB

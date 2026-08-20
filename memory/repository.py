@@ -276,6 +276,18 @@ class MemoryRepository:
             )
         return self.create(content, key=key, category=category, importance=importance)
 
+    def get_by_key(self, key: str) -> Optional[Memory]:
+        row = self._db.fetchone(
+            "SELECT * FROM memories WHERE key = ? LIMIT 1",
+            (key,),
+        )
+        if row is None:
+            return None
+        return Memory.from_row(row)
+
+    def list_by_category(self, category: str, *, limit: int = 20) -> list[Memory]:
+        return self.search("", category=category, limit=limit)
+
     # --- Embeddings (local hashing) ---
 
     def store_embedding(self, memory_id: int, vector: bytes) -> None:

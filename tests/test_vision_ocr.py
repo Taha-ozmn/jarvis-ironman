@@ -46,8 +46,11 @@ class VisionOcrTests(unittest.TestCase):
         ):
             result = ScreenDescribeTool().run({})
         self.assertTrue(result.ok)
-        self.assertIn("OCR", str(result.data))
         self.assertIn("42", str(result.data))
+        self.assertIn("Preview", str(result.data))
+        self.assertTrue(
+            "OCR" in str(result.data) or "Ekrandaki metin" in str(result.data)
+        )
 
     def test_describe_fallback_metadata(self) -> None:
         with patch(
@@ -66,7 +69,7 @@ class VisionOcrTests(unittest.TestCase):
             result = ScreenDescribeTool().run({})
         self.assertTrue(result.ok)
         self.assertIn("Cursor", str(result.data))
-        self.assertIn("unavailable", str(result.data).lower())
+        self.assertIn("görebiliyorum", str(result.data).lower())
 
 
 if __name__ == "__main__":

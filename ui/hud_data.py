@@ -122,7 +122,8 @@ def build_command_center(os_core: Any) -> dict[str, Any]:
 
     diagnostics: dict[str, Any] = {}
     try:
-        diagnostics = os_core.health()
+        health_fn = getattr(os_core, "health_cached", None) or os_core.health
+        diagnostics = health_fn() if callable(health_fn) else os_core.health()
     except Exception as err:
         diagnostics = {"ok": False, "error": str(err)}
 
@@ -147,6 +148,10 @@ def build_command_center(os_core: Any) -> dict[str, Any]:
     settings = {
         "max_permission_level": int(
             getattr(getattr(os_core, "permissions", None), "max_level", 2)
+        ),
+        "full_autonomy": bool(getattr(os_core, "full_autonomy", False)),
+        "auto_approve_dangerous": bool(
+            getattr(getattr(os_core, "confirmation", None), "auto_approve", False)
         ),
         "automation": bool(getattr(os_core.automation, "enabled", False)),
         "proactive": bool(getattr(os_core, "proactive_enabled", False)),

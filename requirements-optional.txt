@@ -5,4 +5,9 @@
 #   playwright install chromium
 #
 # Without this file, browser tools use macOS `open` + urllib (read-only).
-playwright>=1.40.0
+#
+# macOS 12 (Monterey): Playwright 1.62+ sets chromium download URLs for mac12
+# to undefined ("does not support chromium on mac12"). Pin below 1.62.
+# Verified on macOS 12.7.6 x86_64: playwright==1.61.0 + chromium launch OK.
+# macOS 13+ may use newer Playwright (remove the upper bound if desired).
+playwright>=1.40.0,<1.62.0

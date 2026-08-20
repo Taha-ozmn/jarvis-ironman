@@ -7,6 +7,16 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Optional
 
+# Import structured logger
+from core.structured_logger import (
+    log_user_input,
+    log_voice_partial,
+    log_voice_final,
+    log_intent_detected,
+    log_error,
+    LogEvent,
+)
+
 SWIFT_LISTENER = Path(__file__).resolve().parent / "macos_listen"
 SWIFT_SOURCE = Path(__file__).resolve().parent / "macos_listen.swift"
 
@@ -42,6 +52,14 @@ class VoiceListener:
         self._use_pyaudio = False
         self._recognizer = None
         self._ensure_listener()
+        # Log listener initialization
+        from core.structured_logger import structured_logger
+        structured_logger.info(
+            LogEvent.TASK_CREATED,
+            "voice.listener",
+            f"VoiceListener initialized: language={self.language}",
+            status="initialized"
+        )
 
     def _ensure_listener(self) -> None:
         if not SWIFT_LISTENER.exists() and SWIFT_SOURCE.exists():
@@ -104,14 +122,21 @@ class VoiceListener:
             recognizer = self._recognizer or sr.Recognizer()
             with sr.AudioFile(str(path)) as source:
                 audio = recognizer.record(source)
-            return recognizer.recognize_google(audio, language=self.language)
+            text = recognizer.recognize_google(audio, language=self.language)
+            # Log the recognized text (could be partial or final, we don't know here)
+            # The caller (listen_once) will differentiate via on_partial and on_wake.
+            # We'll log as partial for now, but note that the final command logging happens in main.py.
+            log_voice_partial("voice.listener", text)
+            return text
         except sr.UnknownValueError:
             return None
         except sr.RequestError as err:
             print(f"⚠️  Google speech API: {err}")
+            log_error("voice.listener", str(err), "RequestError")
             return None
         except Exception as err:
             print(f"⚠️  Speech recognition: {err}")
+            log_error("voice.listener", str(err), "SpeechRecognitionError")
             return None
         finally:
             try:
@@ -133,6 +158,7 @@ class VoiceListener:
         )
         if build.returncode != 0 and build.stderr:
             print(f"⚠️  Swift rebuild failed: {build.stderr.strip()}")
+            log_error("voice.listener", f"Swift rebuild failed: {build.stderr.strip()}", "BuildError")
 
     def _listen_pyaudio(self, timeout: float) -> Optional[str]:
         if not self._use_pyaudio or not self._recognizer:
@@ -146,7 +172,9 @@ class VoiceListener:
                     timeout=timeout,
                     phrase_time_limit=self.phrase_limit,
                 )
-            return self._recognizer.recognize_google(audio, language=self.language)
+            text = self._recognizer.recognize_google(audio, language=self.language)
+            log_voice_partial("voice.listener", text)
+            return text
         except (sr.WaitTimeoutError, sr.UnknownValueError, sr.RequestError):
             return None
 
@@ -170,6 +198,14 @@ class VoiceListener:
 
         if self.on_wake:
             self.on_wake()
+        # Log that wake word was detected
+        from core.structured_logger import structured_logger
+        structured_logger.info(
+            LogEvent.VOICE_FINAL,
+            "voice.listener",
+            f"Wake word detected in: {text}",
+            status="detected"
+        )
 
         command = text[match.end() :].strip(" ,.-")
         if command:

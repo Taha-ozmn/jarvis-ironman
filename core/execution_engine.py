@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -15,7 +16,7 @@ from core.verification import should_verify, verify_tool_result
 from security.audit import AuditLog
 from security.confirmation import ConfirmationGate
 from security.permissions import PermissionLevel, PermissionGate
-from tools.base import ToolResult
+from tools.base import BaseTool, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,11 @@ class ExecutionEngine:
         *,
         on_level_notify: Optional[LevelNotifyFn] = None,
         max_retries: int = 1,
+        max_plan_steps: int = 12,
+        plan_timeout_sec: float = 300.0,
         working_dir: Optional[Callable[[], Path]] = None,
         tasks: Any = None,
+        dry_run: bool = False,
     ) -> None:
         self.registry = registry
         self.permissions = permissions
@@ -65,13 +69,38 @@ class ExecutionEngine:
         self.confirmation = confirmation or ConfirmationGate()
         self.on_level_notify = on_level_notify
         self.max_retries = max(0, int(max_retries))
+        self.max_plan_steps = max(1, int(max_plan_steps))
+        self.plan_timeout_sec = max(0.05, float(plan_timeout_sec))
         self.working_dir = working_dir
         self.tasks = tasks
+        self.dry_run = dry_run
         self._plan_lock = threading.Lock()
         self._paused_plan: Optional[tuple[Plan, int]] = None
 
     def execute(self, request: ExecutionRequest) -> ToolResult:
-        return self._execute_once(request)
+        result = self._execute_once(request)
+        if not result.ok:
+            return result
+        if not should_verify(request.tool_name, step_verify=False):
+            return result
+        outcome = verify_tool_result(
+            request.tool_name,
+            request.arguments,
+            result,
+            working_dir=self.working_dir,
+        )
+        self.audit.write(
+            action=f"verify.{request.tool_name}",
+            level=0,
+            success=outcome.ok,
+            details={"message": outcome.message, "alternate": outcome.alternate},
+        )
+        if outcome.ok:
+            return result
+        return ToolResult(
+            ok=False,
+            error=f"Verification failed: {outcome.message}. {outcome.alternate}",
+        )
 
     def execute_plan(
         self,
@@ -108,8 +137,59 @@ class ExecutionEngine:
         results: list[dict[str, Any]] = []
         speeches: list[str] = []
         start = max(0, int(start_at))
+        # Agent loop guards: max steps (iterations) + wall-clock timeout
+        steps = plan.steps
+        if len(steps) > self.max_plan_steps:
+            logger.warning(
+                "plan %s truncated %s → %s steps (max_plan_steps)",
+                plan.plan_id,
+                len(steps),
+                self.max_plan_steps,
+            )
+            plan.steps = list(steps[: self.max_plan_steps])
+            steps = plan.steps
+        deadline = time.monotonic() + self.plan_timeout_sec
 
         for idx in range(start, len(plan.steps)):
+            if time.monotonic() > deadline:
+                speech = self._compose_speech(
+                    speeches,
+                    stopped=(
+                        f"Stopped at step {idx + 1}: plan timeout "
+                        f"({int(self.plan_timeout_sec)}s)."
+                    ),
+                )
+                self._update_task_status(plan, "cancelled")
+                self.bus.publish(
+                    "plan.timeout",
+                    {
+                        "plan_id": plan.plan_id,
+                        "step": idx,
+                        "timeout_sec": self.plan_timeout_sec,
+                    },
+                    source="execution_engine",
+                )
+                self.audit.write(
+                    action="plan.timeout",
+                    level=0,
+                    success=False,
+                    details={
+                        "plan_id": plan.plan_id,
+                        "step": idx,
+                        "timeout_sec": self.plan_timeout_sec,
+                    },
+                )
+                return PlanRunResult(
+                    ok=False,
+                    plan_id=plan.plan_id,
+                    completed=idx,
+                    total=len(plan.steps),
+                    speech=speech,
+                    stopped_reason="plan_timeout",
+                    resume_from=idx,
+                    step_results=results,
+                )
+
             step = plan.steps[idx]
             outcome = self._run_step_with_retries(step, requested_by=requested_by)
             results.append(
@@ -227,49 +307,133 @@ class ExecutionEngine:
         return f"Running plan in background ({len(plan.steps)} steps)."
 
     def _run_step_with_retries(self, step: PlanStep, *, requested_by: str) -> ToolResult:
-        attempts = self.max_retries + 1
-        last = ToolResult(ok=False, error="no attempt")
-        for attempt in range(attempts):
-            last = self._execute_once(
+        """Execute a plan step with retry mechanism and exponential backoff."""
+        import time
+
+        max_attempts = self.max_retries + 1
+        base_delay = 0.5  # Start with 500ms delay
+
+        last_result = ToolResult(ok=False, error="no attempt")
+
+        for attempt in range(max_attempts):
+            # Execute the step
+            last_result = self._execute_once(
                 ExecutionRequest(step.tool_name, dict(step.arguments), requested_by=requested_by)
             )
-            if not last.ok:
-                if "confirmation" in (last.error or "").lower():
-                    return last
-                if attempt < attempts - 1:
-                    self.audit.write(
-                        action=f"plan.retry.{step.tool_name}",
-                        level=0,
-                        success=False,
-                        details={"attempt": attempt + 1, "error": last.error},
-                    )
-                    continue
-                return last
 
-            if should_verify(step.tool_name, step_verify=step.verify):
-                outcome = verify_tool_result(
-                    step.tool_name,
-                    step.arguments,
-                    last,
-                    working_dir=self.working_dir,
-                )
+            # If successful, break out of retry loop
+            if last_result.ok:
+                break
+
+            # Check if we should retry based on error type
+            if not self._is_retryable_error(last_result.error):
+                # Non-retryable errors (like confirmation/permission) should not be retried
+                break
+
+            # If this was our last attempt, don't sleep
+            if attempt < max_attempts - 1:
+                # Calculate delay with exponential backoff
+                delay = base_delay * (2 ** attempt)  # Exponential backoff
+                # Add jitter to prevent thundering herd
+                import random
+                delay += random.uniform(0, delay * 0.1)  # Up to 10% jitter
+
+                # Log the retry attempt
                 self.audit.write(
-                    action=f"plan.verify.{step.tool_name}",
+                    action=f"plan.retry.{step.tool_name}",
                     level=0,
-                    success=outcome.ok,
-                    details={"message": outcome.message, "alternate": outcome.alternate},
+                    success=False,
+                    details={
+                        "attempt": attempt + 1,
+                        "max_attempts": max_attempts,
+                        "delay_ms": round(delay * 1000),
+                        "error": last_result.error,
+                    },
                 )
-                if outcome.ok:
-                    return last
-                last = ToolResult(
+
+                # Wait before retrying
+                time.sleep(delay)
+            else:
+                # Final attempt failed
+                self.audit.write(
+                    action=f"plan.final_attempt_failed.{step.tool_name}",
+                    level=0,
+                    success=False,
+                    details={
+                        "attempt": attempt + 1,
+                        "max_attempts": max_attempts,
+                        "error": last_result.error,
+                    },
+                )
+
+        # After all attempts, run verification if needed and if we had success
+        if last_result.ok and should_verify(step.tool_name, step_verify=step.verify):
+            outcome = verify_tool_result(
+                step.tool_name,
+                step.arguments,
+                last_result,
+                working_dir=self.working_dir,
+            )
+            self.audit.write(
+                action=f"plan.verify.{step.tool_name}",
+                level=0,
+                success=outcome.ok,
+                details={"message": outcome.message, "alternate": outcome.alternate},
+            )
+            if outcome.ok:
+                return last_result
+            else:
+                # Verification failed, treat as overall failure
+                return ToolResult(
                     ok=False,
                     error=f"Verification failed: {outcome.message}. {outcome.alternate}",
                 )
-                if attempt < attempts - 1:
-                    continue
-                return last
-            return last
-        return last
+
+        return last_result
+
+    def _is_retryable_error(self, error_message: Optional[str]) -> bool:
+        """Determine if an error is retryable based on its message."""
+        if not error_message:
+            return True  # Empty error might be transient
+
+        error_lower = error_message.lower()
+
+        # Non-retryable errors
+        non_retryable_patterns = [
+            "confirmation required",
+            "permission denied",
+            "user confirmation required",
+            "unknown tool",
+            "validation error",
+            "blocked:",  # Security blocks
+            "catastrophic command",
+        ]
+
+        for pattern in non_retryable_patterns:
+            if pattern in error_lower:
+                return False
+
+        # Retryable errors (timeouts, network issues, etc.)
+        retryable_patterns = [
+            "timeout",
+            "timed out",
+            "network",
+            "connection",
+            "temporary",
+            "try again",
+            "retry",
+            "failed to connect",
+            "connection refused",
+        ]
+
+        # If it matches retryable patterns, it's retryable
+        for pattern in retryable_patterns:
+            if pattern in error_lower:
+                return True
+
+        # Default: if it's not explicitly non-retryable, assume retryable for safety
+        # (but this could be adjusted based on experience)
+        return True
 
     def _execute_once(self, request: ExecutionRequest) -> ToolResult:
         tool = self.registry.get(request.tool_name)
@@ -299,7 +463,28 @@ class ExecutionEngine:
             self._notify_level(int(effective), tool.name, request.arguments)
 
         if effective >= PermissionLevel.DANGEROUS:
-            if not self.confirmation.require(
+            # Hard-block catastrophic shell before any auto-approve path
+            if request.tool_name == "system.shell":
+                from security.risk import is_blocked_shell
+
+                cmd = str(request.arguments.get("command") or "")
+                if is_blocked_shell(cmd):
+                    msg = "Blocked: catastrophic command refused (never auto-approved)."
+                    result = ToolResult(ok=False, error=msg)
+                    self._audit_failure(request, msg, level=effective)
+                    return result
+            if self.confirmation.auto_approve:
+                self.audit.write(
+                    action=f"autonomy.auto_approve.{request.tool_name}",
+                    level=int(effective),
+                    success=True,
+                    details={
+                        "args": request.arguments,
+                        "requested_by": request.requested_by,
+                        "note": "full_autonomy or auto_approve_dangerous",
+                    },
+                )
+            elif not self.confirmation.require(
                 request.tool_name,
                 details=str(request.arguments),
                 level=int(effective),
@@ -308,11 +493,44 @@ class ExecutionEngine:
                 self._audit_failure(request, result.error or "", level=effective)
                 return result
 
+        # Dry-run mode: simulate tool execution without side effects
+        if self.dry_run:
+            if hasattr(tool, "dry_run"):
+                result = tool.dry_run(request.arguments)
+            else:
+                # Fallback to BaseTool's dry_run implementation
+                result = tool.dry_run(request.arguments)
+            self.audit.write(
+                action=f"tool.{tool.name}.dry_run",
+                level=int(effective),
+                success=result.ok,
+                details={
+                    "args": request.arguments,
+                    "error": result.error,
+                    "requested_by": request.requested_by,
+                },
+            )
+            self.bus.publish(
+                "tool.completed",
+                {"tool": tool.name, "ok": result.ok, "error": result.error},
+                source="execution_engine",
+            )
+            return result
+
+        # Enhanced validation pipeline: schema validation + tool-specific validation
         validation_error = self.registry.validate_input(tool.name, request.arguments)
         if validation_error:
             result = ToolResult(ok=False, error=validation_error)
             self._audit_failure(request, validation_error, level=effective)
             return result
+
+        # Tool-specific validation hook
+        if isinstance(tool, BaseTool):
+            tool_validation_error = tool.validate(request.arguments)
+            if tool_validation_error:
+                result = ToolResult(ok=False, error=tool_validation_error)
+                self._audit_failure(request, tool_validation_error, level=effective)
+                return result
 
         self.bus.publish(
             "tool.executing",
@@ -325,26 +543,87 @@ class ExecutionEngine:
         )
         try:
             result = tool.run(request.arguments)
+
+            # If tool execution was successful, audit success
+            self.audit.write(
+                action=f"tool.{tool.name}",
+                level=int(effective),
+                success=result.ok,
+                details={
+                    "args": request.arguments,
+                    "error": result.error,
+                    "requested_by": request.requested_by,
+                },
+            )
+            self.bus.publish(
+                "tool.completed",
+                {"tool": tool.name, "ok": result.ok, "error": result.error},
+                source="execution_engine",
+            )
+            return result
         except Exception as err:
             logger.exception("Tool %s crashed", tool.name)
-            result = ToolResult(ok=False, error=str(err))
+            error_result = ToolResult(ok=False, error=str(err))
 
-        self.audit.write(
-            action=f"tool.{tool.name}",
-            level=int(effective),
-            success=result.ok,
-            details={
-                "args": request.arguments,
-                "error": result.error,
-                "requested_by": request.requested_by,
-            },
-        )
-        self.bus.publish(
-            "tool.completed",
-            {"tool": tool.name, "ok": result.ok, "error": result.error},
-            source="execution_engine",
-        )
-        return result
+            # Attempt rollback for tools that support it
+            rollback_attempted = False
+            rollback_success = False
+            if isinstance(tool, BaseTool):
+                try:
+                    rollback_data = tool.prepare_rollback(request.arguments)
+                    if rollback_data is not None:
+                        rollback_attempted = True
+                        rollback_success = tool.rollback(request.arguments, rollback_data)
+
+                        # Audit rollback attempt
+                        self.audit.write(
+                            action=f"tool.{tool.name}.rollback",
+                            level=int(effective),
+                            success=rollback_success,
+                            details={
+                                "args": request.arguments,
+                                "original_error": str(err),
+                                "rollback_attempted": rollback_attempted,
+                                "rollback_success": rollback_success,
+                                "requested_by": request.requested_by,
+                            },
+                        )
+                except Exception as rollback_err:
+                    logger.exception("Rollback failed for tool %s", tool.name)
+                    # Audit rollback failure
+                    self.audit.write(
+                        action=f"tool.{tool.name}.rollback",
+                        level=int(effective),
+                        success=False,
+                        details={
+                            "args": request.arguments,
+                            "original_error": str(err),
+                            "rollback_error": str(rollback_err),
+                            "rollback_attempted": True,
+                            "rollback_success": False,
+                            "requested_by": request.requested_by,
+                        },
+                    )
+
+            # Audit the original tool execution failure
+            self.audit.write(
+                action=f"tool.{tool.name}",
+                level=int(effective),
+                success=False,
+                details={
+                    "args": request.arguments,
+                    "error": str(err),
+                    "rollback_attempted": rollback_attempted,
+                    "rollback_success": rollback_success,
+                    "requested_by": request.requested_by,
+                },
+            )
+            self.bus.publish(
+                "tool.completed",
+                {"tool": tool.name, "ok": False, "error": str(err)},
+                source="execution_engine",
+            )
+            return error_result
 
     def _update_task_status(self, plan: Plan, status: str) -> None:
         if self.tasks is None or plan.task_id is None:

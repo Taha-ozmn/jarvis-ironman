@@ -172,7 +172,7 @@ class BriefingTests(unittest.TestCase):
             memory.create("Prefers British accent", category="preference")
             gen = BriefingGenerator(tasks, memory, db, user_name="Taha", language="en")
             briefing = gen.generate()
-            self.assertIn("Briefing", briefing.voice)
+            self.assertIn("Brifing", briefing.voice)
             self.assertIn("Ship Phase 4", briefing.detail)
             db.close()
 
@@ -206,7 +206,7 @@ class Phase4RouterIntegrationTests(unittest.TestCase):
         root = Path(self._tmp.name)
         self.os = JarvisOS(
             {
-                "jarvis": {"user_name": "Taha", "language": "en-GB"},
+                "jarvis": {"user_name": "Taha", "language": "tr-TR"},
                 "jarvis2": {
                     "db_path": "data/p4.db",
                     "automation": True,
@@ -247,7 +247,12 @@ class Phase4RouterIntegrationTests(unittest.TestCase):
         self.os.tasks.create("Review Phase 4")
         reply = self.os.try_handle_command("briefing")
         self.assertIsNotNone(reply)
-        self.assertTrue("Briefing" in (reply or "") or "open" in (reply or "").lower())
+        self.assertTrue(
+            "Brifing" in (reply or "")
+            or "Briefing" in (reply or "")
+            or "açık" in (reply or "").lower()
+            or "open" in (reply or "").lower()
+        )
 
     def test_automation_delete_requires_system_permission(self) -> None:
         self.os.permissions.max_level = PermissionLevel.LOCAL

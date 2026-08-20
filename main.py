@@ -13,9 +13,11 @@ from __future__ import annotations
 import argparse
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -32,7 +34,22 @@ from system.macos import MacOSController
 from system.hud_stats import get_telemetry
 from voice.listener import VoiceListener
 from voice.narrator import JarvisNarrator
+from voice.self_listen_guard import SelfListenGuard
 from voice.speaker import VoiceSpeaker
+from core.structured_logger import (
+    log_user_input,
+    log_intent_detected,
+    log_tool_started,
+    log_tool_completed,
+    log_message,
+    log_error,
+    log_model_request,
+    log_model_response,
+)
+from core.process_manager import process_manager
+from core.connection_recovery import connection_recovery
+from core.health_monitor import register_health_provider, start_health_monitor
+from core.request_context import set_request_id, clear_request_id
 
 load_dotenv(ROOT / ".env")
 
@@ -60,12 +77,24 @@ class JarvisCore:
         j = config["jarvis"]
         v = config["voice"]
 
-        api_key = os.environ.get("CURSOR_API_KEY", "")
-        if not api_key or api_key.startswith("cursor_your"):
-            print("\n⚠️  CURSOR_API_KEY gerekli!")
-            print("   1. https://cursor.com/dashboard/integrations adresinden API key alın")
-            print("   2. cp .env.example .env && nano .env\n")
-            sys.exit(1)
+        llm_provider = str(j.get("llm_provider", "cursor")).lower()
+        if llm_provider == "nvidia":
+            api_key = (
+                os.environ.get("NVIDIA_API_KEY")
+                or os.environ.get("CURSOR_API_KEY", "")
+            )
+            if not api_key or api_key.startswith("cursor_your"):
+                print("\n⚠️  NVIDIA_API_KEY (or CURSOR_API_KEY) required for NVIDIA provider!")
+                print("   1. Set NVIDIA_API_KEY in .env")
+                print("   2. cp .env.example .env && nano .env\n")
+                sys.exit(1)
+        else:
+            api_key = os.environ.get("CURSOR_API_KEY", "")
+            if not api_key or api_key.startswith("cursor_your"):
+                print("\n⚠️  CURSOR_API_KEY gerekli!")
+                print("   1. https://cursor.com/dashboard/integrations adresinden API key alın")
+                print("   2. cp .env.example .env && nano .env\n")
+                sys.exit(1)
 
         self.speaker = VoiceSpeaker(
             voice=os.environ.get("JARVIS_VOICE", j.get("voice", "en-GB-RyanNeural")),
@@ -78,11 +107,17 @@ class JarvisCore:
             native_first=v.get("native_first", True),
             language=os.environ.get("JARVIS_LANGUAGE", j.get("language", "en-GB")),
         )
+        # Set up speaker busy callback to manage microphone during speech
+        self.speaker.set_busy_callback(self._on_speaker_busy_change)
+        self.listen_guard = SelfListenGuard(
+            self.speaker,
+            enabled=bool(v.get("self_listen_guard", True)),
+            cooldown_ms=int(v.get("post_tts_cooldown_ms", 220)),
+        )
         listen_lang = (
             os.environ.get("JARVIS_LISTEN_LANGUAGE")
             or v.get("listen_language")
-            or os.environ.get("JARVIS_LANGUAGE")
-            or j.get("language", "tr-TR")
+            or "tr-TR"
         )
         self.listener = VoiceListener(
             language=listen_lang,
@@ -123,7 +158,14 @@ class JarvisCore:
             model_routing=j.get("model_routing", True),
             stream_preview=j.get("stream_preview", False),
             models=j.get("models"),
+            llm_provider=j.get("llm_provider", "cursor"),
         )
+        # Hard-lock spoken replies to English (input may be Turkish)
+        self.brain.reply_language = "en"
+        self.brain.language = os.environ.get("JARVIS_LANGUAGE", j.get("language", "en-GB"))
+        if str(self.brain.language).lower().startswith("tr"):
+            self.brain.language = "en-GB"
+        self.brain.address = self.brain.user_name or "sir"
         self.brain.fast_mode = j.get("fast_mode", True)
         self.brain.max_speech_chars = j.get("max_speech_chars", 280)
         self.speak_ack = j.get("speak_ack", False)
@@ -135,8 +177,10 @@ class JarvisCore:
         self._status = "idle"
         self._command_queue: queue.Queue[str] = queue.Queue()
         self._processing = threading.Lock()
+        self._current_request_id: Optional[str] = None
         self._boot_greeting_sent = False
         self._listening_enabled = True
+        self._speaking_busy = False
 
         j2 = config.get("jarvis2", {})
         if j2.get("enabled", True) and j2.get("soft_init", True):
@@ -151,10 +195,25 @@ class JarvisCore:
                 except Exception:
                     pass
 
+        # Initialize health monitoring
+        try:
+            # Register health providers for core systems
+            register_health_provider("process_manager", lambda: process_manager.get_stats())
+            register_health_provider("connection_recovery", lambda: connection_recovery.get_health())
+
+            # Start the health monitor
+            start_health_monitor()
+        except Exception as e:
+            # Don't let health monitor failures break the system
+            print(f"⚠️  Health monitor initialization error: {e}")
+
     def set_mic_listening(self, enabled: bool, *, announce: bool = True) -> str:
         self._listening_enabled = enabled
         if self.ui:
             self.ui.send_mic_state(enabled)
+        # Also update SessionContext in JARVIS 2.0 for consistent state reporting
+        if self.os_v2 is not None:
+            self.os_v2.context.set_listening_enabled(enabled)
         if enabled:
             detail = "Standing by — speak your command"
             msg = "Very good — I'm listening again, sir."
@@ -275,6 +334,28 @@ class JarvisCore:
         if self.ui:
             self.ui.send_narration(text)
 
+    def _on_speaker_busy_change(self, busy: bool) -> None:
+        """Callback for when speaker starts/stops speaking."""
+        self._speaking_busy = busy
+        self.listen_guard.refresh()
+
+    def _resume_listening_after_speech(self) -> None:
+        """Wait for TTS + cooldown, then reopen mic (browser listen_gate)."""
+        try:
+            self.listen_guard.wait_until_accepting(timeout=35.0)
+        except Exception:
+            pass
+        if self.ui:
+            try:
+                self.ui.flush_pending_commands()
+            except Exception:
+                pass
+            try:
+                # Explicit release — listeners may skip duplicate notify
+                self.ui.send_listen_gate(False)
+            except Exception:
+                pass
+
     def boot(self) -> None:
         j = self.config.get("jarvis", {})
         fast_boot = j.get("fast_boot", True)
@@ -356,6 +437,11 @@ class JarvisCore:
                 self.os_v2.close()
             except Exception:
                 pass
+        # Stop health monitoring
+        try:
+            stop_health_monitor()
+        except Exception:
+            pass
         try:
             farewell = f"Powering down, {self.brain.user_name or 'sir'}. JARVIS signing off."
             self.speaker.speak(farewell)
@@ -547,65 +633,153 @@ class JarvisCore:
         if not command.strip():
             return "I didn't catch that."
 
+        # Log user input
+        if self._current_request_id is not None:
+            log_user_input("main.core", command, task_id=self._current_request_id, execution_id=self._current_request_id)
+
         # Level-3 voice confirm — only when gate is waiting (interactive)
         confirm_reply = self._try_voice_confirmation(command)
         if confirm_reply is not None:
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "voice_confirmation", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return confirm_reply
 
         stop = self.try_stop_speech(command)
         if stop is not None:
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "stop_speech", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return stop
 
         shutdown = self.system.try_shutdown(command)
         if shutdown == "SHUTDOWN_JARVIS":
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "system_shutdown", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return shutdown
 
         listen = self.try_listen_control(command)
         if listen:
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "listen_control", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return listen
 
         # JARVIS 2.0 tool path — works even when ai_only is on
         tool_reply = self._try_jarvis2_tools(command)
         if tool_reply is not None:
+            # Open/media failures: retry legacy macOS helpers before giving up
+            if self._should_retry_local_action(command, tool_reply):
+                legacy = (
+                    self.system.try_direct_app(command)
+                    or self.system.try_open(command)
+                    or self.system.try_media(command)
+                )
+                if legacy:
+                    if self._current_request_id is not None:
+                        log_tool_completed(
+                            "main.core",
+                            "legacy_retry",
+                            True,
+                            0,
+                            task_id=self._current_request_id,
+                            execution_id=self._current_request_id,
+                        )
+                    return legacy
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "jarvis2_tool", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return tool_reply
 
         if self.ai_only:
+            if self._current_request_id is not None:
+                log_message("main.core", "AI-only mode, no tool match", level="info")
             return None
 
         meta = self.try_local_meta(command)
         if meta:
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "local_meta", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return meta
 
         quick_reply = self._quick_reply(command)
         if quick_reply:
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "quick_reply", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return quick_reply
 
         # Legacy local heuristics (v2 disabled or unmatched)
         quick = self.system.try_quick_action(command)
         if quick:
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "quick_action", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return quick
 
         direct = self.system.try_direct_app(command)
         if direct:
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "direct_app", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return direct
 
         media = self.system.try_media(command)
         if media:
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "media", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return media
 
         opened = self.system.try_open(command)
         if opened:
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "open", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return opened
 
         shell = self.system.try_shell(command)
         if shell:
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "shell", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return shell
 
         search = self.system.try_web_search(command)
         if search:
+            if self._current_request_id is not None:
+                log_tool_completed("main.core", "web_search", True, 0, task_id=self._current_request_id, execution_id=self._current_request_id)
             return search
 
         return None
+
+    def _should_retry_local_action(self, command: str, tool_reply: str) -> bool:
+        """True when FastBrain failed an open/media action that legacy may still handle."""
+        lower_cmd = (command or "").lower()
+        lower_reply = (tool_reply or "").lower()
+        fail_markers = (
+            "could not",
+            "couldn't",
+            "failed",
+            "unable to",
+            "not found",
+            "timed out",
+            "açılamadı",
+            "acilamadi",
+            "could not verify",
+        )
+        if not any(m in lower_reply for m in fail_markers):
+            return False
+        action_markers = (
+            "aç",
+            "ac ",
+            " open",
+            "open ",
+            "launch",
+            "başlat",
+            "baslat",
+            "çal",
+            "cal ",
+            "play",
+            "spotify",
+            "chrome",
+            "safari",
+            "youtube",
+            "music",
+            "müzik",
+            "muzik",
+        )
+        return any(m in lower_cmd for m in action_markers)
 
     def _try_voice_confirmation(self, command: str) -> Optional[str]:
         """Resolve pending Level-3 confirm via evet/hayır without tool routing."""
@@ -665,15 +839,23 @@ class JarvisCore:
 
     def _run_command(self, command: str) -> None:
         if not self._processing.acquire(blocking=False):
-            print(f"⏳ Hâlâ işleniyor, atlandı: {command}")
+            print(f"⏳ Still processing, skipped: {command}")
             return
 
-        print(f"📢 Komut: {command}")
+        print(f"📢 Command: {command}")
         response = ""
         self.speaker.flush()
+        self.listen_guard.set_processing(True)
+        if self.ui:
+            self.ui.send_listen_gate(True)
         self._set_status("thinking", command)
         if self.ui:
             self.ui.broadcast("thinking", command)
+
+        # Generate and set request ID for this turn
+        request_id = uuid.uuid4().hex[:12]
+        set_request_id(request_id)
+        self._current_request_id = request_id
 
         try:
             if not command.strip():
@@ -717,12 +899,26 @@ class JarvisCore:
         except KeyboardInterrupt:
             raise
         except Exception as err:
-            response = f"My apologies. An error occurred: {err}"
-            self._set_status("error", str(err))
-            print(f"⚠️  {err}")
+            # Never expose raw locale/thread internals to the user (English only).
+            err_text = str(err)
+            print(f"⚠️  {err_text}")
+            if "signal" in err_text.lower() and "main" in err_text.lower():
+                response = (
+                    "My apologies — a threading fault interrupted that action. "
+                    "Please try the command again."
+                )
+            else:
+                response = (
+                    "My apologies — something went wrong while handling that. "
+                    "Please try again."
+                )
+            self._set_status("error", "fault")
             self._emit_response(command, response)
             self.speaker.say(response)
         finally:
+            clear_request_id()
+            self._current_request_id = None
+            self.listen_guard.set_processing(False)
             self._processing.release()
 
         if response == "SHUTDOWN_JARVIS":
@@ -730,6 +926,8 @@ class JarvisCore:
             raise KeyboardInterrupt
 
         print(f"🤖 JARVIS: {response}\n")
+        # Resume mic only after real TTS finishes (fixes one-shot listen)
+        self._resume_listening_after_speech()
         self._set_status("idle", "Standing by — speak your command")
 
     def _emit_response(self, command: str, response: str) -> None:
@@ -746,6 +944,7 @@ class JarvisCore:
             self.os_v2.ingest_conversation(command, response)
         self._emit_response(command, response)
         self._jarvis_speak(response)
+        self._resume_listening_after_speech()
         self._set_status("idle", "Standing by — speak your command")
         print(f"🤖 JARVIS (background): {response}\n")
 
@@ -778,7 +977,6 @@ class JarvisCore:
         if not self.ui:
             self.handle_native_voice_loop()
             return
-
         self.listener._ensure_listener()
         self.listener.calibrate()
         listener_ready = (ROOT / "voice" / "macos_listen").exists() or self.listener._use_pyaudio
@@ -841,11 +1039,15 @@ class JarvisCore:
                     print("🔇 Speech interrupted")
                     continue
 
+                if not self.listen_guard.should_accept_transcript(command):
+                    # Drop STT echo / commands while TTS or cooldown is active
+                    continue
+
                 self._command_queue.put(command)
             except KeyboardInterrupt:
                 break
             except Exception as err:
-                print(f"⚠️  Hata: {err}")
+                print(f"⚠️  Error: {err}")
                 self._set_status("error", str(err))
                 time.sleep(1)
 
@@ -856,8 +1058,8 @@ class JarvisCore:
             return
 
         self.ui.wait_ready()
-        print("🎙️  Sürekli dinleme — doğrudan konuş")
-        print("   Örnek: Saat kaç · Spotify aç · YouTube NBC\n")
+        print("🎙️  Continuous listening — speak naturally")
+        print("   Examples: What time is it · Open Spotify · YouTube NBC\n")
         self._set_status("idle", "Standing by — speak your command")
 
         worker = threading.Thread(target=self._command_worker, daemon=True)
@@ -872,6 +1074,10 @@ class JarvisCore:
                     if self.try_stop_speech(command) is not None:
                         print("🔇 Speech interrupted")
                         continue
+
+                    if not self.listen_guard.should_accept_transcript(command):
+                        continue
+
                     self._command_queue.put(command)
             except KeyboardInterrupt:
                 break
@@ -884,10 +1090,10 @@ class JarvisCore:
 
         require_wake = self.config.get("ui", {}).get("require_wake_word", False)
         if require_wake:
-            print("👂 Native dinleme — 'Jarvis' deyin...")
+            print("👂 Native listening — say 'Jarvis'...")
             self._set_status("idle", "Awaiting wake word")
         else:
-            print("👂 Native dinleme — doğrudan konuş")
+            print("👂 Native listening — speak naturally")
             self._set_status("idle", "Standing by — speak your command")
 
         paused_detail = 'Mic paused — say "listen again" or press LISTEN'
@@ -909,6 +1115,10 @@ class JarvisCore:
                 if self.try_stop_speech(command) is not None:
                     print("🔇 Speech interrupted")
                     continue
+
+                if not self.listen_guard.should_accept_transcript(command):
+                    continue
+
                 self._run_command(command)
             except KeyboardInterrupt:
                 break
@@ -916,8 +1126,9 @@ class JarvisCore:
                 print(f"⚠️  Hata: {err}")
                 self._set_status("error", str(err))
                 time.sleep(1)
+
     def handle_text_loop(self) -> None:
-        print("💬 Metin modu — 'quit' ile çıkış\n")
+        print("💬 Metin modu — 'quit' ile çıkış")
         while True:
             try:
                 user_input = input(f"{self.brain.user_name}> ").strip()
@@ -951,6 +1162,8 @@ def start_ui_server(
     mic_cfg = {
         **ui_config,
         "listen_language": core.config.get("voice", {}).get("listen_language", "tr-TR"),
+        "self_listen_guard": core.config.get("voice", {}).get("self_listen_guard", True),
+        "post_tts_cooldown_ms": core.config.get("voice", {}).get("post_tts_cooldown_ms", 220),
     }
 
     def _data_provider() -> dict:
@@ -970,12 +1183,18 @@ def start_ui_server(
         open_browser=open_browser,
         desktop_mode=desktop_mode,
         telemetry_interval=interval,
-        data_provider=_data_provider,
         command_center_interval=cc_interval,
         on_confirm=_on_confirm,
     )
     core.ui.on_mic_control = core._handle_mic_control
     core.ui.send_mic_state(core._listening_enabled)
+
+    def _on_listen_gate(blocked: bool) -> None:
+        if core.ui:
+            core.ui.send_listen_gate(blocked)
+
+    core.listen_guard.add_listener(_on_listen_gate)
+    core.ui.set_voice_accept_fn(core.listen_guard.should_accept_transcript)
 
     if core.os_v2 is not None:
         def _level_notify(level: int, tool: str, args: dict) -> None:

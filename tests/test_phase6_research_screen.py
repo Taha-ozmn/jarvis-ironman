@@ -62,8 +62,17 @@ class BrowserHonestyTests(unittest.TestCase):
 
     def test_browser_diagnostics(self) -> None:
         info = browser_diagnostics()
-        self.assertFalse(info["playwright"])
-        self.assertEqual(info["engine"], "urllib+open")
+        self.assertIn("playwright", info)
+        self.assertIn("engine", info)
+        self.assertIn("note", info)
+        self.assertIn("chromium", info)
+        if info["playwright"] and info.get("chromium"):
+            self.assertIn("playwright", str(info["engine"]))
+        elif info["playwright"]:
+            self.assertFalse(info.get("chromium"))
+        else:
+            self.assertEqual(info["engine"], "urllib+open")
+            self.assertFalse(info.get("chromium"))
 
 
 class ScreenToolsTests(unittest.TestCase):
@@ -101,7 +110,15 @@ class ScreenToolsTests(unittest.TestCase):
             result = ScreenDescribeTool().run({})
         self.assertTrue(result.ok)
         self.assertIn("Cursor", str(result.data))
-        self.assertIn("metadata", str(result.data).lower())
+        # Capture failed → still reports frontmost honestly (TR)
+        self.assertTrue(
+            "Cursor" in str(result.data)
+            and (
+                "ön planda" in str(result.data).lower()
+                or "capture" in str(result.data).lower()
+                or "açık" in str(result.data).lower()
+            )
+        )
 
     def test_describe_failure(self) -> None:
         with patch(

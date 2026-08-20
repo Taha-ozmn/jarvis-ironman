@@ -10,12 +10,19 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
 
+from core.timeout_manager import timeout_manager, TimeoutType
+from core.process_manager import ProcessConfig, ProcessType, process_manager
+
 
 class MacOSController:
     """Local system actions JARVIS can perform instantly (no AI round-trip)."""
 
     APP_ALIASES = {
         "chrome": "Google Chrome",
+        "google chrome": "Google Chrome",
+        "çift gp": "Google Chrome",
+        "cift gp": "Google Chrome",
+        "krom": "Google Chrome",
         "safari": "Safari",
         "spotify": "Spotify",
         "cursor": "Cursor",
@@ -25,9 +32,14 @@ class MacOSController:
         "music": "Music",
         "slack": "Slack",
         "discord": "Discord",
-        "youtube": "Google Chrome",
         "vscode": "Visual Studio Code",
+        "visual studio code": "Visual Studio Code",
+        "code": "Visual Studio Code",
         "mail": "Mail",
+        "gmail": "Gmail",
+        "google mail": "Gmail",
+        "outlook": "Microsoft Outlook",
+        "microsoft outlook": "Microsoft Outlook",
         "calendar": "Calendar",
         "photos": "Photos",
         "settings": "System Settings",
@@ -45,6 +57,9 @@ class MacOSController:
 
     def __init__(self, full_shell_access: bool = True) -> None:
         self.full_shell_access = full_shell_access
+        from system.app_catalog import get_app_catalog
+
+        self._app_catalog = get_app_catalog()
 
     def try_shutdown(self, text: str) -> Optional[str]:
         lower = text.lower().strip()
@@ -58,8 +73,12 @@ class MacOSController:
         if any(w in lower for w in shutdown_words):
             if "jarvis" in lower or "sistem" in lower or "system" in lower or "pc" in lower:
                 return "SHUTDOWN_JARVIS"
-            if self._extract_close_target(text):
-                return self._close_app(self._extract_close_target(text))
+            # Automation disable phrases belong to the command router
+            if "otomasyon" in lower or "automation" in lower:
+                return None
+            target = self._extract_close_target(text)
+            if target:
+                return self._close_app(target)
 
         if any(w in lower for w in sleep_words):
             self._osascript('tell application "System Events" to sleep')
@@ -72,34 +91,97 @@ class MacOSController:
         return None
 
     def try_media(self, text: str) -> Optional[str]:
+        from core.open_target import extract_music_intent, extract_site_url
+
         lower = text.lower()
         youtube_triggers = ("youtube", "you tube", "yt")
-        spotify_triggers = ("spotify", "şarkı", "müzik", "music", "play", "çal")
+        spotify_triggers = (
+            "spotify",
+            "şarkı",
+            "sarki",
+            "şarkıs",
+            "müzik",
+            "muzik",
+            "müziğ",
+            "muzig",
+            "music",
+            "play",
+            "çal",
+            "dinle",
+        )
+
+        intent = extract_music_intent(text)
+        if intent is not None:
+            from core.open_target import spotify_search_url, youtube_search_url
+
+            url = (
+                spotify_search_url(intent.query)
+                if intent.service == "spotify"
+                else youtube_search_url(intent.query)
+            )
+            try:
+                with timeout_manager.timeout_context(TimeoutType.BROWSER):
+                    result = subprocess.run(
+                        ["open", url],
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_manager.get_timeout(TimeoutType.BROWSER),
+                    )
+            except (OSError, subprocess.TimeoutExpired):
+                webbrowser.open(url)
+                result = None
+            if result is not None and result.returncode != 0:
+                webbrowser.open(url)
+            label = "Spotify" if intent.service == "spotify" else "YouTube"
+            return f"I've searched {label} for «{intent.query}»."
+
+        site_url = extract_site_url(text)
+        if site_url and any(t in lower for t in youtube_triggers):
+            try:
+                with timeout_manager.timeout_context(TimeoutType.BROWSER):
+                    result = subprocess.run(
+                        ["open", site_url],
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_manager.get_timeout(TimeoutType.BROWSER),
+                    )
+            except (OSError, subprocess.TimeoutExpired):
+                webbrowser.open(site_url)
+                return "YouTube is open."
+            if result.returncode != 0:
+                webbrowser.open(site_url)
+            return "YouTube is open."
 
         if any(t in lower for t in youtube_triggers):
-            query = self._strip_media_prefix(text, youtube_triggers + ("open", "aç", "ara", "search"))
-            if query:
+            query = self._strip_media_prefix(
+                text,
+                youtube_triggers
+                + ("open", "aç", "ac", "ara", "search", "video", "dan", "den", "'dan", "'den"),
+            )
+            query = re.sub(r"^['\"]?(?:dan|den|tan|ten)\s*", "", query, flags=re.I).strip()
+            if query and len(query) > 2:
                 url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
                 webbrowser.open(url)
-                return f"I've opened a YouTube search for «{query}»."
+                return f"I've searched YouTube for «{query}»."
             webbrowser.open("https://www.youtube.com")
-            return "Opening YouTube."
+            return "YouTube is open."
 
         if any(t in lower for t in spotify_triggers):
-            if self._is_open_command(lower):
-                resolved = self._resolve_app_name("spotify")
-                if resolved:
-                    return self._open_app(resolved)
-            else:
-                query = self._strip_media_prefix(
-                    text,
-                    spotify_triggers + ("open", "aç", "ara", "search", "jarvis"),
-                )
-                if query and len(query) > 2:
-                    encoded = quote_plus(query)
-                    url = f"https://open.spotify.com/search/{encoded}"
-                    webbrowser.open(url)
-                    return f"I've opened Spotify search for «{query}»."
+            if self._is_open_command(lower) and re.search(r"\bspotify\b", lower):
+                # Bare «spotify aç» — open app (search intents already returned above)
+                if len(lower.split()) <= 3:
+                    resolved = self._resolve_app_name("spotify")
+                    if resolved:
+                        return self._open_app(resolved)
+            query = self._strip_media_prefix(
+                text,
+                spotify_triggers + ("open", "aç", "ara", "search", "jarvis"),
+            )
+            if query and len(query) > 2:
+                encoded = quote_plus(query)
+                url = f"https://open.spotify.com/search/{encoded}"
+                webbrowser.open(url)
+                return f"I've opened Spotify search for «{query}»."
 
         return None
 
@@ -117,14 +199,15 @@ class MacOSController:
             return "Shell access is disabled in configuration."
 
         try:
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                cwd=str(Path.home()),
-            )
+            with timeout_manager.timeout_context(TimeoutType.TERMINAL):
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_manager.get_timeout(TimeoutType.TERMINAL),
+                    cwd=str(Path.home()),
+                )
             output = (result.stdout or result.stderr or "").strip()
             if not output:
                 output = "Command completed with no output."
@@ -212,30 +295,137 @@ class MacOSController:
 
         return self._open_app(target)
 
-    def _open_app(self, name: str) -> Optional[str]:
-        try:
-            subprocess.Popen(
-                ["open", "-a", name],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return f"Launching {name}."
-        except OSError:
-            return None
+    def _open_app(self, name: str, *, language: str = "en-GB") -> Optional[str]:
+        from core.open_target import SITE_OPEN_URLS, normalize_open_target
+
+        del language
+        key = normalize_open_target(name).lower()
+        url = SITE_OPEN_URLS.get(key)
+        if url:
+            try:
+                with timeout_manager.timeout_context(TimeoutType.BROWSER):
+                    result = subprocess.run(
+                        ["open", url],
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_manager.get_timeout(TimeoutType.BROWSER),
+                    )
+            except (OSError, subprocess.TimeoutExpired):
+                webbrowser.open(url)
+                return "YouTube is open." if key == "youtube" else f"{url} is open."
+            if result.returncode != 0:
+                try:
+                    webbrowser.open(url)
+                except Exception:
+                    return None
+            return "YouTube is open." if key == "youtube" else f"{url} is open."
+
+        app = self._app_catalog.resolve(name, aliases=self.APP_ALIASES)
+        open_targets: list[list[str]] = []
+        if app is not None:
+            open_targets.append(["open", str(app.path)])
+            if app.name.lower() != name.lower().strip():
+                open_targets.append(["open", "-a", app.name])
+        open_targets.append(["open", "-a", name])
+
+        last_err = ""
+        last_err_cmd = ""
+        for cmd in open_targets:
+            try:
+                with timeout_manager.timeout_context(TimeoutType.BROWSER):
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_manager.get_timeout(TimeoutType.BROWSER),
+                    )
+            except (OSError, subprocess.TimeoutExpired) as e:
+                # Log the exception for debugging
+                print(f"_open_app: Exception running {' '.join(cmd)}: {e}")
+                continue
+            if result.returncode == 0:
+                label = app.name if app is not None else name
+                return f"{label} is open."
+            # Store the error for logging/debugging
+            err_output = (result.stderr or result.stdout or "").strip()
+            if err_output:  # Only keep non-empty errors
+                last_err = err_output
+                last_err_cmd = " ".join(cmd)
+
+        mdfind_app = self._app_catalog.spotlight_find(normalize_open_target(name))
+        if mdfind_app is not None:
+            try:
+                result = subprocess.run(
+                    ["open", str(mdfind_app.path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if result.returncode == 0:
+                    return f"{mdfind_app.name} is open."
+            except (OSError, subprocess.TimeoutExpired) as e:
+                print(f"_open_app: Exception running Spotlight fallback: {e}")
+                pass
+
+        # Log detailed error information for developers
+        if last_err:
+            print(f"_open_app: Failed to open '{name}'. Last command: '{last_err_cmd}'. Error: '{last_err}'")
+        return None
 
     def _close_app(self, name: str) -> str:
         resolved = self._resolve_app_name(name) or name
+        if resolved in ("youtube",) or str(resolved).startswith("http"):
+            return "Please close the browser tab manually."
         script = f'tell application "{resolved}" to quit'
         self._osascript(script)
-        return f"Closing {resolved}."
+        return f"{resolved} is closed."
 
     def _resolve_app_name(self, target: str) -> Optional[str]:
+        from core.open_target import SITE_OPEN_URLS, normalize_open_target
+        import difflib
+
         lower = target.lower().strip()
+        normalized = normalize_open_target(lower).lower()
+        if normalized in SITE_OPEN_URLS or lower in SITE_OPEN_URLS:
+            # Caller (open_app / try_open) opens URL — return sentinel key
+            return normalized if normalized in SITE_OPEN_URLS else lower
         if lower in self.APP_ALIASES:
             return self.APP_ALIASES[lower]
+        if normalized in self.APP_ALIASES:
+            return self.APP_ALIASES[normalized]
+
+        # Enhanced alias matching with fuzzy matching
         for alias, app in self.APP_ALIASES.items():
+            if alias == "youtube":
+                continue  # avoid substring false-positives on "…youtube…"
+            # Exact substring match
             if alias in lower or lower in alias:
                 return app
+            # Fuzzy matching for close matches (like speech-to-text errors)
+            if len(alias) > 3 and len(lower) > 3:
+                similarity = difflib.SequenceMatcher(None, alias, lower).ratio()
+                if similarity > 0.8:  # 80% similarity threshold
+                    return app
+
+        app = self._app_catalog.resolve(target, aliases=self.APP_ALIASES)
+        if app is not None:
+            return app.name
+
+        # Additional fallback: try to find similar app names in catalog
+        try:
+            all_apps = self._app_catalog.list_names(limit=100)  # Get more apps for matching
+            if all_apps:
+                # Find close matches using difflib
+                close_matches = difflib.get_close_matches(lower, [app.lower() for app in all_apps], n=3, cutoff=0.6)
+                if close_matches:
+                    # Return the original case version of the first close match
+                    matched_lower = close_matches[0]
+                    for app in all_apps:
+                        if app.lower() == matched_lower:
+                            return app
+        except Exception:
+            pass  # If catalog search fails, continue with None
+
         return None
 
     @staticmethod
@@ -252,22 +442,9 @@ class MacOSController:
 
     @staticmethod
     def _extract_close_target(text: str) -> Optional[str]:
-        lower = text.lower()
-        for prefix in (
-            "jarvis kapat",
-            "close ",
-            "kapat ",
-            "quit ",
-            "çık ",
-        ):
-            if lower.startswith(prefix):
-                return text[len(prefix):].strip()
-        for word in ("kapat", "close", "quit"):
-            if word in lower:
-                parts = lower.split(word, 1)
-                if len(parts) > 1 and parts[1].strip():
-                    return parts[1].strip()
-        return None
+        from core.open_target import extract_close_target
+
+        return extract_close_target(text)
 
     @staticmethod
     def _extract_shell_command(text: str) -> Optional[str]:
@@ -291,25 +468,9 @@ class MacOSController:
 
     @staticmethod
     def _extract_target(text: str) -> Optional[str]:
-        for prefix in (
-            "jarvis aç ",
-            "jarvis open ",
-            "hey jarvis aç ",
-            "hey jarvis open ",
-            "aç ",
-            "open ",
-            "launch ",
-            "başlat ",
-            "göster ",
-            "show ",
-        ):
-            if text.lower().startswith(prefix):
-                return text[len(prefix):].strip()
-        for word in ("aç", "open", "launch", "başlat", "göster", "show"):
-            if word in text.lower():
-                idx = text.lower().index(word)
-                return text[idx + len(word):].strip()
-        return None
+        from core.open_target import extract_open_target
+
+        return extract_open_target(text)
 
     @staticmethod
     def _run(cmd: list[str]) -> None:
@@ -371,12 +532,21 @@ class MacOSController:
             return True
 
         try:
-            subprocess.Popen(
+            # Use process manager for background Music app opening
+            config = ProcessConfig(
+                process_type=ProcessType.BACKGROUND_SERVICE,
+                name="music-app",
+                timeout_type=TimeoutType.TERMINAL,
+                cleanup_on_exit=True
+            )
+
+            pid = process_manager.spawn_process(
                 ["open", "-a", "Music"],
+                config,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except OSError:
+        except Exception:
             pass
         return False
 
@@ -409,13 +579,22 @@ class MacOSController:
             return True
 
         try:
-            subprocess.Popen(
+            # Use process manager for background Spotify web URL opening
+            config = ProcessConfig(
+                process_type=ProcessType.BACKGROUND_SERVICE,
+                name="spotify-web-url",
+                timeout_type=TimeoutType.TERMINAL,
+                cleanup_on_exit=True
+            )
+
+            pid = process_manager.spawn_process(
                 ["open", web_url],
+                config,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             return True
-        except OSError:
+        except Exception:
             return False
 
     def _play_spotify_uri(self, uri: str) -> bool:
@@ -438,11 +617,20 @@ class MacOSController:
             return True
 
         try:
-            subprocess.Popen(
+            # Use process manager for background Spotify URI opening
+            config = ProcessConfig(
+                process_type=ProcessType.BACKGROUND_SERVICE,
+                name="spotify-uri",
+                timeout_type=TimeoutType.TERMINAL,
+                cleanup_on_exit=True
+            )
+
+            pid = process_manager.spawn_process(
                 ["open", "-a", "Spotify", uri],
+                config,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             return True
-        except OSError:
+        except Exception:
             return False

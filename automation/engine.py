@@ -74,6 +74,11 @@ class AutomationEngine:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.RLock()
         self.file_watch = FileWatchService()
+        self._paused_until = 0.0
+
+    def pause_for(self, seconds: float) -> None:
+        """Skip ticks briefly (light mode / host pressure)."""
+        self._paused_until = time.monotonic() + max(0.0, float(seconds))
 
     # --- CRUD ---
 
@@ -183,6 +188,9 @@ class AutomationEngine:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
+            if time.monotonic() < self._paused_until:
+                self._stop.wait(1.0)
+                continue
             try:
                 self.tick()
             except Exception:

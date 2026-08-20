@@ -1,4 +1,4 @@
-"""JARVIS verbal acknowledgements — Iron Man butler style."""
+"""JARVIS verbal acknowledgements — classic film English, not parody."""
 
 from __future__ import annotations
 
@@ -7,47 +7,61 @@ import re
 
 
 class JarvisNarrator:
-    """Instant British-butler phrases while JARVIS works."""
+    """Short English acknowledgements while JARVIS works — no chatbot filler."""
 
+    # Deliberately no "Bakıyorum." — that cadence sounds like generic AI TTS.
     GENERIC_ACKS = (
-        "Right away, sir.",
-        "On it, sir.",
-        "Very good, sir.",
-        "At your service, sir.",
-        "Immediately, sir.",
-        "As you wish, sir.",
-        "One moment, sir.",
-        "Certainly, sir.",
-        "Understood, sir.",
-        "Allow me a moment, sir.",
+        "Right away.",
+        "Understood.",
+        "On it.",
+        "One moment.",
+        "Certainly.",
     )
 
     WORK_UPDATES = (
-        "One moment, sir.",
-        "Still on it, sir.",
-        "Working on that now, sir.",
-        "Nearly there, sir.",
-        "Just a moment more, sir.",
-        "Running diagnostics, sir.",
-        "Building that for you, sir.",
-        "Still executing your directive, sir.",
-        "Complex task in progress, sir.",
-        "Continuing work — won't be long, sir.",
+        "Still working on that, sir.",
+        "Hang on — still on it.",
+        "Almost there.",
+        "Thinking it through, sir.",
+        "Working the next step now.",
+        "Still on your request.",
     )
 
     BOOT_LINES = (
-        "Boot sequence initiated.",
-        "Loading neural core.",
-        "Connecting to Stark OS.",
-        "Calibrating voice interface.",
-        "All systems nominal.",
+        "Systems coming online.",
+        "Voice interface ready.",
+        "Command centre online.",
+        "At the ready.",
     )
 
-    def instant_ack(self, command: str) -> str:
-        """Brief acknowledgement while the AI processes — no keyword assumptions."""
+    GENERIC_ACKS_TR = (
+        "Tamam.",
+        "Anlaşıldı.",
+        "Hemen.",
+        "Bir saniye.",
+        "Tabii.",
+    )
+
+    WORK_UPDATES_TR = (
+        "Hâlâ üzerinde çalışıyorum.",
+        "Devam ediyorum.",
+        "Neredeyse bitti.",
+    )
+
+    BOOT_LINES_TR = (
+        "Sistemler yükleniyor.",
+        "Ses arayüzü hazır.",
+        "Komuta merkezi çevrimiçi.",
+        "Hazırım.",
+    )
+
+    def instant_ack(self, command: str, *, language: str = "en") -> str:
+        """Brief acknowledgement while the AI processes — English only for TTS."""
+        del command, language
         return random.choice(self.GENERIC_ACKS)
 
-    def work_update(self, index: int = 0) -> str:
+    def work_update(self, index: int = 0, *, language: str = "en") -> str:
+        del language
         return self.WORK_UPDATES[index % len(self.WORK_UPDATES)]
 
     def boot_line(self, index: int) -> str:
@@ -57,18 +71,13 @@ class JarvisNarrator:
     def time_greeting(language: str = "en") -> str:
         import datetime
 
+        del language
         hour = datetime.datetime.now().hour
-        if str(language).lower().startswith("tr"):
-            if hour < 12:
-                return "Günaydın, efendim."
-            if hour < 18:
-                return "İyi günler, efendim."
-            return "İyi akşamlar, efendim."
         if hour < 12:
-            return "Good morning, sir."
+            return "Good morning."
         if hour < 18:
-            return "Good afternoon, sir."
-        return "Good evening, sir."
+            return "Good afternoon."
+        return "Good evening."
 
     @staticmethod
     def first_sentence(text: str) -> str:

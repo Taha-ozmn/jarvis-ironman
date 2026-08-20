@@ -52,12 +52,26 @@ def task_timeout(
     return simple
 
 
-def work_update_delays(complexity: str, *, fast: bool = False) -> tuple[float, ...]:
-    """Periodic status pings while the agent runs."""
+def work_update_delays(
+    complexity: str,
+    *,
+    fast: bool = False,
+    interval_sec: float = 5.0,
+    max_pings: int = 120,
+) -> tuple[float, ...]:
+    """Absolute delays for progress pings while the agent runs.
+
+    Fast/simple paths return no pings (local tools finish under ~1s).
+    Otherwise: first ping at ``interval_sec``, then every interval thereafter.
+    """
     if fast and complexity == "simple":
         return ()
+    interval = max(1.0, float(interval_sec or 5.0))
+    count = max(1, int(max_pings))
     if complexity == "deep":
-        return (5.0, 15.0, 30.0, 60.0, 120.0, 180.0)
-    if complexity == "complex":
-        return (5.0, 15.0, 45.0, 90.0)
-    return (4.0,)
+        count = max(count, 180)
+    elif complexity == "complex":
+        count = max(count, 90)
+    else:
+        count = min(count, 24)
+    return tuple(interval * (i + 1) for i in range(count))

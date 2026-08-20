@@ -29,15 +29,148 @@ class BrowserOpenUrlTool(BaseTool):
             return ToolResult(ok=False, error="url required")
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        try:
-            subprocess.Popen(
-                ["open", url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+        ok, err = _open_url_checked(url)
+        if not ok:
+            return ToolResult(ok=False, error=err or f"Could not open «{url}».")
+        lower_url = url.lower()
+        if "youtube.com/results" in lower_url or "search_query=" in lower_url:
+            return ToolResult(ok=True, data=f"YouTube search is open: {url}")
+        if "youtube.com" in lower_url:
+            return ToolResult(ok=True, data=f"YouTube is open: {url}")
+        if "mail.google.com" in lower_url:
+            return ToolResult(ok=True, data="Gmail is open.")
+        if "outlook." in lower_url:
+            return ToolResult(ok=True, data="Outlook is open.")
+        return ToolResult(ok=True, data=f"Opened {url}.")
+
+
+class BrowserListTabsTool(BaseTool):
+    name = "browser.list_tabs"
+    description = "List open Chrome/Safari tabs (title + URL) via AppleScript"
+    permission_level = PermissionLevel.READ
+    input_schema: dict = {}
+
+    def run(self, arguments: dict[str, Any]) -> ToolResult:
+        del arguments
+        tabs = list_browser_tabs()
+        if not tabs:
+            return ToolResult(
+                ok=True,
+                data="No open tabs found. Is Chrome or Safari running?",
             )
-        except OSError:
+        lines = []
+        for i, tab in enumerate(tabs, 1):
+            title = tab.get("title") or "Untitled"
+            url = tab.get("url") or ""
+            browser = tab.get("browser") or ""
+            suffix = f" ({browser})" if browser else ""
+            if url:
+                lines.append(f"{i}) {title} — {url}{suffix}")
+            else:
+                lines.append(f"{i}) {title}{suffix}")
+        summary = "Open tabs: " + " ".join(lines)
+        return ToolResult(ok=True, data=summary)
+
+
+def list_browser_tabs(*, timeout: float = 8.0) -> list[dict[str, str]]:
+    """Collect tabs from running Chrome and Safari via osascript."""
+    tabs: list[dict[str, str]] = []
+    for browser, script in (
+        ("Chrome", _CHROME_TABS_SCRIPT),
+        ("Safari", _SAFARI_TABS_SCRIPT),
+    ):
+        raw = _run_osascript(script, timeout=timeout)
+        if not raw:
+            continue
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or "|||" not in line:
+                continue
+            title, _, url = line.partition("|||")
+            title = title.strip() or "Untitled"
+            url = url.strip()
+            tabs.append({"title": title, "url": url, "browser": browser})
+    return tabs
+
+
+_CHROME_TABS_SCRIPT = """
+tell application "System Events"
+  set chromeRunning to (exists process "Google Chrome")
+end tell
+if chromeRunning then
+  tell application "Google Chrome"
+    set out to ""
+    repeat with w in windows
+      repeat with t in tabs of w
+        set out to out & (title of t as text) & "|||" & (URL of t as text) & linefeed
+      end repeat
+    end repeat
+    return out
+  end tell
+else
+  return ""
+end if
+"""
+
+_SAFARI_TABS_SCRIPT = """
+tell application "System Events"
+  set safariRunning to (exists process "Safari")
+end tell
+if safariRunning then
+  tell application "Safari"
+    set out to ""
+    repeat with w in windows
+      repeat with t in tabs of w
+        set out to out & (name of t as text) & "|||" & (URL of t as text) & linefeed
+      end repeat
+    end repeat
+    return out
+  end tell
+else
+  return ""
+end if
+"""
+
+
+def _run_osascript(script: str, *, timeout: float = 8.0) -> str:
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
+
+
+def _open_url_checked(url: str) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            ["open", url],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except FileNotFoundError:
+        try:
             webbrowser_open(url)
-        return ToolResult(ok=True, data=f"Opened {url}")
+            return True, ""
+        except Exception as err:
+            return False, str(err)
+    except subprocess.TimeoutExpired:
+        return False, "open timed out"
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "open failed").strip()
+        try:
+            webbrowser_open(url)
+            return True, ""
+        except Exception:
+            return False, err[:300]
+    return True, ""
 
 
 class BrowserSearchTool(BaseTool):
@@ -51,15 +184,10 @@ class BrowserSearchTool(BaseTool):
         if not query:
             return ToolResult(ok=False, error="query required")
         url = "https://duckduckgo.com/?q=" + urllib.parse.quote_plus(query)
-        try:
-            subprocess.Popen(
-                ["open", url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError:
-            webbrowser_open(url)
-        return ToolResult(ok=True, data=f"Searching for «{query}».")
+        ok, err = _open_url_checked(url)
+        if not ok:
+            return ToolResult(ok=False, error=err or "search open failed")
+        return ToolResult(ok=True, data=f"I've searched for «{query}».")
 
 
 class BrowserGetPageTextTool(BaseTool):
@@ -100,12 +228,14 @@ class BrowserFillFormTool(BaseTool):
         from tools.browser_playwright import playwright_available, playwright_fill
 
         if not playwright_available():
+            from tools.browser_playwright import playwright_install_hint
+
             return ToolResult(
                 ok=False,
                 error=(
-                    "browser.fill_form NOT AVAILABLE — Playwright not installed. "
-                    "Install: pip install -r requirements-optional.txt && playwright install chromium. "
-                    "Fallback: browser.open_url / get_page_text."
+                    "Playwright yüklü değil — form doldurma kullanılamıyor. "
+                    f"Kurulum: {playwright_install_hint()} "
+                    "Playwright NOT AVAILABLE. Fallback: browser.open_url / get_page_text."
                 ),
                 data={"received": arguments},
             )
@@ -133,11 +263,14 @@ class BrowserClickTool(BaseTool):
         from tools.browser_playwright import playwright_available, playwright_click
 
         if not playwright_available():
+            from tools.browser_playwright import playwright_install_hint
+
             return ToolResult(
                 ok=False,
                 error=(
-                    "browser.click NOT AVAILABLE — Playwright not installed. "
-                    "Install optional deps — see requirements-optional.txt."
+                    "Playwright yüklü değil — tıklama kullanılamıyor. "
+                    f"Kurulum: {playwright_install_hint()} "
+                    "Playwright NOT AVAILABLE."
                 ),
             )
         url = str(arguments.get("url") or "").strip()
@@ -172,14 +305,24 @@ def browser_diagnostics() -> dict[str, Any]:
     from tools.browser_playwright import playwright_status
 
     status = playwright_status()
-    if status.get("available"):
+    chromium = bool(status.get("chromium"))
+    if status.get("available") and chromium:
         return {
             "engine": "playwright+urllib",
             "playwright": True,
+            "chromium": True,
+            "note": status.get("note"),
+        }
+    if status.get("available"):
+        return {
+            "engine": status.get("engine") or "playwright-package-only",
+            "playwright": True,
+            "chromium": False,
             "note": status.get("note"),
         }
     return {
         "engine": "urllib+open",
         "playwright": False,
+        "chromium": False,
         "note": status.get("note"),
     }

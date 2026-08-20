@@ -1,4 +1,4 @@
-"""Cursor SDK powered JARVIS brain — acts first, apologizes never."""
+"""JARVIS brain supporting both Cursor SDK and direct NVIDIA API integration."""
 
 from __future__ import annotations
 
@@ -20,11 +20,12 @@ from cursor_sdk import (
 
 from brain.conversation import ConversationMemory
 from brain.sdk_patch import apply_sdk_patch
-
-apply_sdk_patch()
 from brain.model_router import ACTION_WORDS, ModelRouter
 from brain.task_router import classify_complexity, task_timeout, work_update_delays
 from voice.narrator import JarvisNarrator
+from brain.nvidia_llm_provider import NVIDIAProvider
+
+apply_sdk_patch()
 
 JARVIS_IRON_MAN = """You are J.A.R.V.I.S. — Just A Rather Very Intelligent System — Tony Stark's personal AI from the Iron Man films.
 
@@ -62,7 +63,10 @@ LANGUAGE_LINES = {
         "HER ZAMAN Türkçe yanıtla — akıcı, doğal ve kibar Türkçe. Filmdeki JARVIS'in "
         "sakin, ölçülü, hafif esprili üslubunu koru. Kullanıcıya ara sıra 'efendim' diye hitap et."
     ),
-    "en": "Understand Turkish naturally; reply in British English unless asked otherwise.",
+    "en": (
+        "The user may speak Turkish or English. Understand both. "
+        "ALWAYS reply in British English only — never Turkish, never mix languages."
+    ),
 }
 
 CONVERSATIONAL_HINT = (
@@ -127,6 +131,7 @@ class JarvisBrain:
         model_routing: bool = True,
         stream_preview: bool = False,
         models: dict[str, str] | None = None,
+        llm_provider: str = "cursor",
     ) -> None:
         self.api_key = api_key
         self.workspace = self._resolve_workspace(workspace)
@@ -153,9 +158,13 @@ class JarvisBrain:
         self.max_speech_chars = 200
         self.model_routing = model_routing
         self.stream_preview = stream_preview
+        self.llm_provider = llm_provider
         self.persona_refresh_interval = max(1, persona_refresh_interval)
         self.memory = ConversationMemory(max_turns=max(1, conversation_turns))
         self._turn_count = 0
+        # Initialize LLM provider based on configuration
+        self.provider = None
+        self.provider_type = None
         default_models = {
             "chat": "gemini-3-flash",
             "action": "gemini-3-flash",
@@ -173,8 +182,10 @@ class JarvisBrain:
             default=default_models["default"],
             resolve=self._resolve_model,
         )
+        # Provider-specific fields
         self._ctx = None
         self._agent: Agent | None = None
+        self._nvidia_provider: Optional[NVIDIAProvider] = None
         self._persona_pending = True
         self._available_models: set[str] = set()
         self._ready = threading.Event()
@@ -237,42 +248,63 @@ class JarvisBrain:
         with self._start_lock:
             if self._ready.is_set():
                 return
-            if not self.skip_model_list:
-                try:
-                    self._available_models = {
-                        m.id for m in Cursor.models.list(api_key=self.api_key)
-                    }
-                except CursorAgentError:
-                    self._available_models = set()
-            else:
-                self._available_models = {self.model}
 
-            self.model = self._resolve_model(self.model)
-            last_err: Exception | None = None
-            for attempt in range(3):
+            # Initialize the appropriate LLM provider based on configuration
+            if self.llm_provider == 'nvidia':
+                # Initialize NVIDIA provider
                 try:
-                    self._ctx = Agent.create(
-                        model=self.model,
+                    self._nvidia_provider = NVIDIAProvider(
                         api_key=self.api_key,
-                        local=self._local_options(),
+                        default_model=self.model,
                     )
-                    self._agent = self._ctx.__enter__()
+                    if not self._nvidia_provider.available():
+                        raise RuntimeError("NVIDIA API key not configured")
                     self._ready.set()
-                    print(f"🧠 Cursor SDK — model: {self.model}")
+                    print(f"🧠 NVIDIA API — model: {self.model}")
                     return
-                except CursorAgentError as err:
-                    last_err = err
-                    msg = str(err.message) if hasattr(err, "message") else str(err)
-                    transient = (
-                        "tool-callback-auth-token" in msg
-                        or "Bridge exited before discovery" in msg
-                    )
-                    if transient and attempt < 2:
-                        apply_sdk_patch()
-                        continue
-                    raise
-            if last_err:
-                raise last_err
+                except Exception as err:
+                    print(f"⚠️  NVIDIA provider initialization failed: {err}")
+                    # Fall back to Cursor
+                    self.llm_provider = 'cursor'
+
+            if self.llm_provider == 'cursor' or self.llm_provider != 'nvidia':
+                # Initialize Cursor SDK (original logic)
+                if not self.skip_model_list:
+                    try:
+                        self._available_models = {
+                            m.id for m in Cursor.models.list(api_key=self.api_key)
+                        }
+                    except CursorAgentError:
+                        self._available_models = set()
+                else:
+                    self._available_models = {self.model}
+
+                self.model = self._resolve_model(self.model)
+                last_err: Exception | None = None
+                for attempt in range(3):
+                    try:
+                        self._ctx = Agent.create(
+                            model=self.model,
+                            api_key=self.api_key,
+                            local=self._local_options(),
+                        )
+                        self._agent = self._ctx.__enter__()
+                        self._ready.set()
+                        print(f"🧠 Cursor SDK — model: {self.model}")
+                        return
+                    except CursorAgentError as err:
+                        last_err = err
+                        msg = str(err.message) if hasattr(err, "message") else str(err)
+                        transient = (
+                            "tool-callback-auth-token" in msg
+                            or "Bridge exited before discovery" in msg
+                        )
+                        if transient and attempt < 2:
+                            apply_sdk_patch()
+                            continue
+                        raise
+                if last_err:
+                    raise last_err
 
     def _resolve_model(self, preferred: str) -> str:
         if not preferred:
@@ -340,7 +372,7 @@ class JarvisBrain:
         on_complete: Optional[Callable[[str], None]] = None,
     ) -> str:
         self.ensure_started()
-        if self._agent is None:
+        if self._agent is None and self._nvidia_provider is None:
             raise RuntimeError("Brain not started.")
 
         if self.on_thinking:
@@ -417,12 +449,20 @@ class JarvisBrain:
 
         threading.Thread(target=_wait, daemon=True).start()
 
+    def _uses_nvidia(self) -> bool:
+        return self._nvidia_provider is not None and (
+            self.llm_provider == "nvidia" or self._agent is None
+        )
+
     def _execute_think(
         self,
         user_message: str,
         speak: Callable[[str], None],
         complexity: str = "simple",
     ) -> str:
+        if self._uses_nvidia():
+            return self._execute_think_nvidia(user_message, speak, complexity)
+
         prompt = self._build_prompt(user_message, complexity)
         send_opts = self._send_options(user_message, complexity)
         run = (
@@ -467,6 +507,34 @@ class JarvisBrain:
             speak(full)
         return full
 
+    def _execute_think_nvidia(
+        self,
+        user_message: str,
+        speak: Callable[[str], None],
+        complexity: str = "simple",
+    ) -> str:
+        """Chat Completions path — local FastBrain tools handle OS actions."""
+        assert self._nvidia_provider is not None
+        prompt = self._build_prompt(user_message, complexity)
+        timeout, _level = self._resolve_timeout(user_message)
+        raw = self._nvidia_provider.complete(
+            prompt,
+            timeout=min(float(timeout), 90.0),
+            model=self.model,
+            max_tokens=min(self.max_speech_chars * 2, 1024),
+        )
+        if not raw or raw.lower().startswith("error"):
+            full = self._fallback_action(user_message)
+            if self.narrate:
+                speak(full)
+            return full
+        full = self._clean_for_speech(raw)
+        if not full:
+            full = self._fallback_action(user_message)
+        if self.narrate:
+            speak(full)
+        return full
+
     def _fallback_action(self, command: str) -> str:
         """If AI fails, try shell directly for simple open commands."""
         lower = command.lower()
@@ -476,7 +544,7 @@ class JarvisBrain:
 
     def think(self, user_message: str) -> str:
         self.ensure_started()
-        if self._agent is None:
+        if self._agent is None and self._nvidia_provider is None:
             raise RuntimeError("Brain not started.")
         timeout, level = self._resolve_timeout(user_message)
         executor = ThreadPoolExecutor(max_workers=1)
@@ -493,6 +561,8 @@ class JarvisBrain:
             pass
 
     def _think_once(self, user_message: str, complexity: str = "simple") -> str:
+        if self._uses_nvidia():
+            return self._think_once_nvidia(user_message, complexity)
         prompt = self._build_prompt(user_message, complexity)
         send_opts = self._send_options(user_message, complexity)
         run = (
@@ -506,6 +576,21 @@ class JarvisBrain:
         text = self._clean_for_speech(result.result or "")
         return text or self._fallback_action(user_message)
 
+    def _think_once_nvidia(self, user_message: str, complexity: str = "simple") -> str:
+        assert self._nvidia_provider is not None
+        prompt = self._build_prompt(user_message, complexity)
+        timeout, _level = self._resolve_timeout(user_message)
+        raw = self._nvidia_provider.complete(
+            prompt,
+            timeout=min(float(timeout), 90.0),
+            model=self.model,
+            max_tokens=min(self.max_speech_chars * 2, 1024),
+        )
+        if not raw or raw.lower().startswith("error"):
+            return self._fallback_action(user_message)
+        text = self._clean_for_speech(raw)
+        return text or self._fallback_action(user_message)
+
     def remember_turn(self, user: str, assistant: str) -> None:
         self.memory.add(user, assistant)
 
@@ -513,9 +598,13 @@ class JarvisBrain:
         return LANGUAGE_LINES.get(self.reply_language, LANGUAGE_LINES["en"])
 
     def _lang_directive(self) -> str:
+        # Spoken replies are English-only regardless of user utterance language.
         if self.reply_language == "tr":
             return "\n\nTürkçe yanıtla, efendim diye hitap et."
-        return ""
+        return (
+            "\n\nReply in British English only. "
+            "Understand Turkish input if present. Never reply in Turkish."
+        )
 
     def _persona_reminder(self) -> str:
         if self.reply_language == "tr":

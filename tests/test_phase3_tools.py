@@ -56,6 +56,32 @@ class CommandRouterTests(unittest.TestCase):
     def test_fallthrough_chat(self) -> None:
         self.assertIsNone(self.router.route("tell me a joke about iron man"))
 
+    def test_weather_hava_durumu(self) -> None:
+        m = self.router.route("hava durumu")
+        self.assertIsNotNone(m)
+        assert m is not None
+        self.assertEqual(m.request.tool_name, "weather.current")
+        self.assertEqual(m.request.arguments.get("location"), "")
+
+    def test_weather_with_city(self) -> None:
+        m = self.router.route("İstanbul hava durumu")
+        self.assertIsNotNone(m)
+        assert m is not None
+        self.assertEqual(m.request.tool_name, "weather.current")
+        loc = (m.request.arguments.get("location") or "").lower()
+        self.assertTrue("istanbul" in loc.replace("i̇", "i") or "stanbul" in loc)
+
+    def test_weather_english(self) -> None:
+        m = self.router.route("what's the weather in London")
+        self.assertIsNotNone(m)
+        assert m is not None
+        self.assertEqual(m.request.tool_name, "weather.current")
+
+    def test_weather_not_cursor_fallthrough(self) -> None:
+        """Simple weather must not fall through to brain (None from router)."""
+        self.assertIsNotNone(self.router.route("hava nasıl"))
+        self.assertIsNotNone(self.router.route("weather"))
+
 
 class RiskTests(unittest.TestCase):
     def test_dangerous_shell(self) -> None:

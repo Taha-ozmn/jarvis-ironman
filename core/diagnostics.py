@@ -182,7 +182,10 @@ class SelfDiagnostics:
             return DiagnosticResult(
                 "browser",
                 True,
-                f"engine={info.get('engine')} playwright={info.get('playwright')}",
+                (
+                    f"engine={info.get('engine')} playwright={info.get('playwright')} "
+                    f"chromium={info.get('chromium')}"
+                ),
                 info,
             )
         except Exception as err:
@@ -234,7 +237,9 @@ class SelfDiagnostics:
             return DiagnosticResult(
                 "mcp",
                 True,
-                "no MCP servers configured",
+                "no MCP servers configured — add jarvis2.mcp.servers "
+                "(name, command, args, transport: stdio). Example: "
+                "python3 integrations/fake_mcp_server.py. Boot does not require a live server.",
                 status,
             )
         detail = f"runtime={status.get('runtime')} connected={connected}/{status.get('configured')}"

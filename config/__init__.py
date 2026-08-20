@@ -1,5 +1,16 @@
 """Config package — thin wrapper over YAML."""
 
-from config.loader import ensure_jarvis2_defaults, load_config, save_config
+from config.loader import (
+    ensure_jarvis2_defaults,
+    load_config,
+    load_personality,
+    save_config,
+)
 
-__all__ = ["load_config", "save_config", "ensure_jarvis2_defaults"]
+__all__ = [
+    "load_config",
+    "save_config",
+    "ensure_jarvis2_defaults",
+    "load_personality",
+]
+

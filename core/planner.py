@@ -68,6 +68,9 @@ ALLOWED_PLAN_TOOLS = frozenset(
         "diagnostics.health",
         "browser.open_url",
         "browser.get_page_text",
+        "media.play",
+        "screen.describe",
+        "screen.capture",
     }
 )
 
@@ -107,8 +110,14 @@ class Plan:
 class Planner:
     """Heuristic planner with optional LLM refine (offline-safe fallback)."""
 
-    def __init__(self, llm_refine: Optional[LLMRefineFn] = None) -> None:
+    def __init__(
+        self,
+        llm_refine: Optional[LLMRefineFn] = None,
+        *,
+        max_steps: int = 12,
+    ) -> None:
         self._llm_refine = llm_refine
+        self.max_steps = max(1, int(max_steps))
 
     def set_llm_refine(self, fn: Optional[LLMRefineFn]) -> None:
         self._llm_refine = fn
@@ -141,18 +150,39 @@ class Planner:
                     description="Research the topic",
                 )
             ]
+        steps = steps[: self.max_steps]
         plan = Plan(goal=text, steps=steps, complex=True, source="heuristic")
 
         if self._llm_refine is not None:
             try:
                 refined = self._llm_refine(text, plan)
                 if refined is not None and refined.steps:
+                    refined.steps = refined.steps[: self.max_steps]
                     refined.source = "llm"
                     refined.complex = True
                     refined.goal = text
-                    return refined
+                    plan = refined
             except Exception:
                 logger.exception("LLM plan refine failed — using heuristic")
+
+        # Agent allowlists — drop tools outside profile (no fake capabilities)
+        try:
+            from core.agent_profiles import (
+                filter_plan_steps,
+                looks_like_coding_analyze,
+                looks_like_research_agent,
+            )
+
+            if looks_like_research_agent(text) or text.lower().startswith("research"):
+                plan = filter_plan_steps(plan, "research")
+            elif looks_like_coding_analyze(text) or any(
+                k in text.lower() for k in ("fix cycle", "analyze repo", "dev.", "git ")
+            ):
+                # Only force coding filter for explicit coding agent goals
+                if looks_like_coding_analyze(text) or "fix cycle" in text.lower():
+                    plan = filter_plan_steps(plan, "coding")
+        except Exception:
+            logger.exception("agent allowlist filter skipped")
         return plan
 
     def _template_steps(self, lower: str, text: str) -> list[PlanStep]:
@@ -216,6 +246,20 @@ class Planner:
                     "research.topic",
                     {"query": q, "save_memory": True},
                     description=f"Research «{q[:40]}»",
+                )
+            )
+
+        # Music / media multi-step: search URL → open (verify)
+        from core.open_target import extract_music_intent
+
+        music = extract_music_intent(text)
+        if music is not None and not any(s.tool_name == "media.play" for s in steps):
+            steps.append(
+                PlanStep(
+                    "media.play",
+                    {"query": music.query, "service": music.service},
+                    description=f"Play/search «{music.query[:40]}» on {music.service}",
+                    verify=True,
                 )
             )
 

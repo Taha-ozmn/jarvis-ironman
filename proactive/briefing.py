@@ -26,14 +26,14 @@ class BriefingGenerator:
         memory: MemoryRepository,
         db: Database,
         *,
-        user_name: str = "sir",
+        user_name: str = "",
         language: str = "en",
     ) -> None:
         self.tasks = tasks
         self.memory = memory
         self.db = db
-        self.user_name = user_name or "sir"
-        self.language = "tr" if str(language).lower().startswith("tr") else "en"
+        self.user_name = (user_name or "").strip()
+        self.language = "en" if not str(language).lower().startswith("tr") else "tr"
 
     def generate(self) -> Briefing:
         pending = self.tasks.list(status="pending", limit=20)
@@ -45,10 +45,7 @@ class BriefingGenerator:
         open_count = len(pending) + len(in_progress)
         overdue_count = len(overdue)
 
-        if self.language == "tr":
-            voice = self._voice_tr(open_count, overdue_count)
-        else:
-            voice = self._voice_en(open_count, overdue_count)
+        voice = self._voice_line(open_count, overdue_count)
 
         detail_parts: list[str] = []
         if overdue:
@@ -63,31 +60,39 @@ class BriefingGenerator:
             detail_parts.append(
                 "Notes: " + "; ".join(m.content[:80] for m in prefs[:2])
             )
-        detail = " | ".join(detail_parts) if detail_parts else "No open items."
+        detail = " | ".join(detail_parts) if detail_parts else "Nothing outstanding."
         if len(detail) > 400:
             detail = detail[:400] + "…"
         return Briefing(voice=voice, detail=detail)
 
-    def _voice_en(self, open_count: int, overdue_count: int) -> str:
+    def _voice_line(self, open_count: int, overdue_count: int) -> str:
+        name = self.user_name if self.user_name and self.user_name.lower() not in (
+            "sir",
+            "efendim",
+        ) else ""
+        if str(self.language).lower().startswith("tr"):
+            greet = f"Günaydın{(' ' + name) if name else ''}."
+            if open_count == 0 and overdue_count == 0:
+                return f"{greet} Açık görev yok — sistemler hazır."
+            if overdue_count:
+                prefix = f"Brifing{(' ' + name) if name else ''}"
+                return (
+                    f"{prefix}: {overdue_count} gecikmiş, "
+                    f"{open_count} açık görev var."
+                )
+            prefix = f"Brifing{(' ' + name) if name else ''}"
+            return f"{prefix}: {open_count} açık göreviniz var."
+        greet = f"Good morning{(' ' + name) if name else ''}."
         if open_count == 0 and overdue_count == 0:
-            return f"Good day, {self.user_name}. No open tasks — systems clear."
+            return f"{greet} No open tasks — systems ready."
         if overdue_count:
+            prefix = f"Briefing{(' ' + name) if name else ''}"
             return (
-                f"Briefing, {self.user_name}: {overdue_count} overdue, "
+                f"{prefix}: {overdue_count} overdue, "
                 f"{open_count} open tasks."
             )
-        return f"Briefing, {self.user_name}: {open_count} open tasks on the board."
-
-    def _voice_tr(self, open_count: int, overdue_count: int) -> str:
-        address = "efendim" if self.user_name in ("sir", "") else self.user_name
-        if open_count == 0 and overdue_count == 0:
-            return f"Günaydın {address}. Açık görev yok — sistemler hazır."
-        if overdue_count:
-            return (
-                f"Brifing {address}: {overdue_count} gecikmiş, "
-                f"{open_count} açık görev var."
-            )
-        return f"Brifing {address}: {open_count} açık göreviniz var."
+        prefix = f"Briefing{(' ' + name) if name else ''}"
+        return f"{prefix}: you have {open_count} open tasks."
 
     def _overdue_tasks(self) -> list[Any]:
         now = datetime.now(timezone.utc).isoformat()

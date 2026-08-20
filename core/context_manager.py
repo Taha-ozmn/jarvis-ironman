@@ -23,7 +23,7 @@ class SessionContext:
 
     user_name: str = "sir"
     language: str = "en-GB"
-    model: str = "gemini-3-flash"
+    model: str = "composer-2.5"
     listening_enabled: bool = True
     status: str = "idle"
     last_command: str = ""
@@ -36,6 +36,10 @@ class SessionContext:
 FOLLOWUP_MARKERS = (
     "şimdi",
     "simdi",
+    "o zaman",
+    "o halde",
+    "orada",
+    "oradan",
     "now ",
     "then ",
     "also ",
@@ -105,6 +109,11 @@ class ContextManager:
         with self._lock:
             return self._ctx.extras.get(key, default)
 
+    def set_listening_enabled(self, enabled: bool) -> None:
+        """Update the listening_enabled flag in session context."""
+        with self._lock:
+            self._ctx.listening_enabled = enabled
+
     def record_turn(self, command: str, response: str) -> None:
         with self._lock:
             self._ctx.last_command = command
@@ -114,6 +123,34 @@ class ContextManager:
             if entity:
                 self._last_entity = entity
                 self._ctx.extras["last_entity"] = entity
+
+    def record_open_action(
+        self,
+        *,
+        kind: str,
+        name: str = "",
+        url: str = "",
+    ) -> None:
+        """Remember last open_app / open_url for conversational follow-ups."""
+        with self._lock:
+            self._ctx.extras["last_action"] = kind
+            name_l = (name or "").lower().strip()
+            if name_l:
+                self._ctx.extras["last_opened_app"] = name_l
+                self._last_entity = name_l
+                self._ctx.extras["last_entity"] = name_l
+            if url:
+                self._ctx.extras["last_opened_url"] = url
+                host = self._extract_entity(url)
+                if host:
+                    self._last_entity = host
+                    self._ctx.extras["last_entity"] = host
+            if any(b in name_l for b in ("chrome", "safari", "browser")):
+                self._ctx.extras["last_browser"] = name_l or "browser"
+            elif kind == "open_url":
+                self._ctx.extras["last_browser"] = (
+                    self._ctx.extras.get("last_opened_app") or "browser"
+                )
 
     def resolve_followup(self, command: str) -> str:
         """Expand short follow-ups like 'şimdi GitHub'ı aç' using last entity if needed."""
@@ -128,16 +165,36 @@ class ContextManager:
                 if ent:
                     self._last_entity = ent
             return text
-        # Relative open: "şimdi onu aç" / "open it"
+        # Relative open: "şimdi onu aç" / "open it" / "o zaman aç"
         if any(m in lower for m in FOLLOWUP_MARKERS) or lower in (
             "aç",
             "open",
             "onu aç",
             "open it",
             "open that",
+            "orada aç",
+            "oradan aç",
         ):
             with self._lock:
                 entity = self._last_entity or self._ctx.extras.get("last_entity")
+                browser = self._ctx.extras.get("last_browser") or self._ctx.extras.get(
+                    "last_opened_app"
+                )
+            # After Chrome/Safari: "orada video aç" → YouTube (entity is often the browser)
+            browser_entities = ("chrome", "safari", "browser", "google chrome")
+            entity_l = str(entity or "").lower()
+            if (
+                browser
+                and "video" in lower
+                and any(k in lower for k in ("aç", "open", "göster", "show", "ac"))
+                and "youtube" not in lower
+                and (
+                    not entity_l
+                    or entity_l in browser_entities
+                    or entity_l == str(browser).lower()
+                )
+            ):
+                return "youtube aç"
             if entity and any(k in lower for k in ("aç", "open", "launch", "göster", "show")):
                 return f"open {entity}"
             if entity and len(text.split()) <= 4:

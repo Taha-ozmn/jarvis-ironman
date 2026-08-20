@@ -18,7 +18,7 @@ class JarvisOSTests(unittest.TestCase):
             (root / "data").mkdir()
             os_core = JarvisOS(
                 {
-                    "jarvis": {"user_name": "Taha", "language": "en-GB"},
+                    "jarvis": {"user_name": "Taha", "language": "tr-TR"},
                     "jarvis2": {
                         "enabled": True,
                         "db_path": "data/test.db",

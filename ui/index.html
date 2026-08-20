@@ -201,11 +201,12 @@
       position: relative;
       transition: all 0.4s ease;
     }
-    .reactor.listening { border-color: var(--green); box-shadow: 0 0 60px rgba(0, 255, 136, 0.35); animation: pulse-g 1.5s infinite; }
-    .reactor.thinking { border-color: var(--amber); box-shadow: 0 0 60px rgba(255, 170, 0, 0.35); animation: spin 2s linear infinite; }
-    .reactor.speaking { border-color: var(--cyan); animation: pulse-b 0.7s infinite; }
-    .reactor.booting { border-color: var(--amber); animation: pulse-b 1.2s infinite; }
-    .reactor.error { border-color: var(--red); box-shadow: 0 0 50px rgba(255, 51, 68, 0.5); }
+    .reactor.listening { border-color: var(--green); box-shadow: 0 0 36px rgba(0, 255, 136, 0.22); }
+    .reactor.thinking { border-color: var(--amber); box-shadow: 0 0 36px rgba(255, 170, 0, 0.22); }
+    .reactor.working { border-color: var(--amber); box-shadow: 0 0 28px rgba(255, 170, 0, 0.18); }
+    .reactor.speaking { border-color: var(--cyan); box-shadow: 0 0 36px rgba(0, 212, 255, 0.22); }
+    .reactor.booting { border-color: var(--amber); }
+    .reactor.error { border-color: var(--red); box-shadow: 0 0 36px rgba(255, 51, 68, 0.35); }
 
     .reactor-core {
       width: 54px; height: 54px;
@@ -218,8 +219,8 @@
       border-radius: 50%;
       border: 1px solid rgba(0, 212, 255, 0.3);
     }
-    .ring-1 { width: 120px; height: 120px; animation: spin 8s linear infinite reverse; }
-    .ring-2 { width: 150px; height: 150px; animation: spin 14s linear infinite; }
+    .ring-1 { width: 120px; height: 120px; opacity: 0.7; }
+    .ring-2 { width: 150px; height: 150px; opacity: 0.45; }
 
     .visualizer {
       display: flex;
@@ -617,12 +618,13 @@
     const systemsStatus = document.getElementById('systems-status');
 
     const statusMap = {
-      booting: 'BOOT SEQUENCE',
+      booting: 'BOOT',
       idle: 'STANDBY',
-      listening: 'VOICE INPUT',
-      thinking: 'PROCESSING',
-      speaking: 'TRANSMITTING',
-      error: 'FAULT DETECTED',
+      listening: 'LISTENING',
+      thinking: 'THINKING',
+      working: 'WORKING',
+      speaking: 'SPEAKING',
+      error: 'FAULT',
     };
 
     let ws = null;
@@ -635,6 +637,9 @@
     let nativeMic = false;
     let lastSent = '';
     let lastSentTime = 0;
+    let utteranceBuffer = '';
+    let utteranceTimer = null;
+    let utteranceConfidence = 1;
 
     const PAUSE_LISTEN_RE = /(?:beni\s+dinleme|art[iı]k\s+dinleme|dinleme\s+art[iı]k|dinlemeyi\s+(?:durdur|kapat)|mikrofonu?\s+kapat|stop\s+listening|don'?t\s+listen|do\s+not\s+listen|pause\s+listening|mute\s+mic|mic\s+off)/i;
     const RESUME_LISTEN_RE = /(?:tekrar\s+dinle|yeniden\s+dinle|dinlemeye\s+ba[sş]la|mikrofonu?\s+a[cç]|start\s+listening|listen\s+again|resume\s+listening|listen\s+to\s+me|mic\s+on|beni\s+dinle(?!\w))/i;
@@ -643,8 +648,18 @@
       require_wake_word: false,
       min_confidence: 0.55,
       pause_while_busy: true,
-      min_command_length: 3,
+      self_listen_guard: true,
+      post_tts_cooldown_ms: 220,
+      min_command_length: 4,
+      utterance_debounce_ms: 1400,
     };
+
+    let listenGateBlocked = false;
+    let speakResumeTimer = null;
+
+    function hardMuteDuringSpeak() {
+      return !!(micConfig.self_listen_guard || micConfig.pause_while_busy);
+    }
 
     const WAKE_RE = /\b(hey\s+)?(ok\s+)?jarvis\b/i;
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -846,7 +861,7 @@
     }
 
     function startRecognitionIfAllowed() {
-      if (!recognition || processing || !bootComplete) return;
+      if (!recognition || processing || listenGateBlocked || !bootComplete || userMicPaused) return;
       recognitionBusy = false;
       try { recognition.start(); } catch (_) {
         setTimeout(() => {
@@ -855,9 +870,56 @@
       }
     }
 
+    function applyListenGate(blocked) {
+      listenGateBlocked = !!blocked;
+      if (listenGateBlocked) {
+        clearUtteranceBuffer();
+        stopRecognition();
+        setProcessing(true);
+      } else if (!userMicPaused) {
+        setProcessing(false);
+        startRecognitionIfAllowed();
+      }
+      updateMicUI();
+    }
+
+    function clearUtteranceBuffer() {
+      utteranceBuffer = '';
+      utteranceConfidence = 1;
+      if (utteranceTimer) {
+        clearTimeout(utteranceTimer);
+        utteranceTimer = null;
+      }
+    }
+
+    function flushUtterance() {
+      if (utteranceTimer) {
+        clearTimeout(utteranceTimer);
+        utteranceTimer = null;
+      }
+      const text = utteranceBuffer.trim();
+      utteranceBuffer = '';
+      if (!text || utteranceConfidence < micConfig.min_confidence) return;
+      sendCommand(text, true);
+    }
+
+    function queueVoiceUtterance(text, confidence) {
+      const chunk = (text || '').trim();
+      if (!chunk) return;
+      utteranceBuffer = utteranceBuffer ? `${utteranceBuffer} ${chunk}` : chunk;
+      if (confidence > 0) utteranceConfidence = confidence;
+      if (utteranceTimer) clearTimeout(utteranceTimer);
+      const wait = micConfig.utterance_debounce_ms || 1400;
+      utteranceTimer = setTimeout(flushUtterance, wait);
+    }
+
     function sendCommand(text, fromVoice = false) {
       const raw = (text || '').trim();
       if (!raw || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+      if (fromVoice && (listenGateBlocked || (processing && hardMuteDuringSpeak()))) {
+        return;
+      }
 
       if (fromVoice && userMicPaused) {
         if (isResumeListenCommand(raw)) {
@@ -883,7 +945,8 @@
       lastSent = command;
       lastSentTime = now;
       addChat('you', command);
-      if (micConfig.pause_while_busy) stopRecognition();
+      if (hardMuteDuringSpeak()) stopRecognition();
+      clearUtteranceBuffer();
       ws.send(JSON.stringify({ type: 'command', text: command }));
     }
 
@@ -891,16 +954,24 @@
       processing = active;
       updateMicUI();
       visualizer.classList.toggle('active', active && !userMicPaused);
-      if (active && micConfig.pause_while_busy) stopRecognition();
-      else if (!active && !userMicPaused) startRecognitionIfAllowed();
+      if (active && hardMuteDuringSpeak()) stopRecognition();
+      else if (!active && !userMicPaused && !listenGateBlocked) startRecognitionIfAllowed();
     }
 
     function setStatus(status, detail) {
       reactor.className = 'reactor ' + (status || 'idle');
       statusLabel.textContent = statusMap[status] || (status || '').toUpperCase();
       statusDetail.textContent = detail || '';
-      if (status === 'thinking' || status === 'speaking') setProcessing(true);
-      if (status === 'idle' || status === 'listening') setProcessing(false);
+      if (status === 'thinking' || status === 'speaking' || status === 'working') setProcessing(true);
+      if (status === 'idle' || status === 'listening') {
+        // Server releases listen_gate after real TTS; idle is a safety net
+        // when gate was left blocked (e.g. reconnect). Prefer listen_gate:false.
+        if (listenGateBlocked && status === 'listening') {
+          applyListenGate(false);
+        } else if (!listenGateBlocked) {
+          setProcessing(false);
+        }
+      }
       if (status === 'speaking') visualizer.classList.add('active');
       if (status === 'idle' || status === 'listening') visualizer.classList.remove('active');
     }
@@ -920,12 +991,14 @@
       recognition.interimResults = true;
       recognition.onstart = () => {
         recognitionBusy = false;
-        if (!processing && !userMicPaused) setStatus('listening', 'Listening, sir…');
+        if (!processing && !userMicPaused) setStatus('listening', 'Listening');
         else if (userMicPaused) setStatus('idle', 'Mic paused — say "listen again" or press LISTEN');
       };
       recognition.onend = () => {
         recognitionBusy = false;
-        if (!processing) setTimeout(startListening, 300);
+        if (!processing && !listenGateBlocked && !userMicPaused) {
+          setTimeout(startListening, 300);
+        }
       };
       recognition.onerror = (e) => {
         if (nativeMic) return;
@@ -937,6 +1010,11 @@
         if (e.error !== 'no-speech' && e.error !== 'aborted') setStatus('error', 'Mic: ' + e.error);
       };
       recognition.onresult = (event) => {
+        // Hard gate: ignore all STT while TTS/processing (self-listen guard)
+        if (listenGateBlocked || (processing && hardMuteDuringSpeak())) {
+          clearUtteranceBuffer();
+          return;
+        }
         let interim = '', finalText = '', confidence = 1;
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const r = event.results[i];
@@ -950,14 +1028,18 @@
             setStatus('idle', interim);
           }
           if (finalText.trim() && confidence >= micConfig.min_confidence) {
-            sendCommand(finalText, true);
+            queueVoiceUtterance(finalText, confidence);
           }
           return;
         }
-        if (processing && micConfig.pause_while_busy) return;
-        if (interim) setStatus('listening', interim);
+        const preview = (utteranceBuffer + ' ' + (interim || finalText)).trim();
+        if (preview) setStatus('listening', preview);
+        if (interim && utteranceTimer) {
+          clearTimeout(utteranceTimer);
+          utteranceTimer = null;
+        }
         if (!finalText.trim() || confidence < micConfig.min_confidence) return;
-        sendCommand(finalText, true);
+        queueVoiceUtterance(finalText, confidence);
       };
       recognitionReady = true;
       if (bootComplete) startListening();
@@ -992,6 +1074,16 @@
           }
         }
         if (data.type === 'mic_state') setUserMicPaused(!data.enabled, { notifyServer: false });
+        if (data.type === 'listen_gate') {
+          if (speakResumeTimer) {
+            clearTimeout(speakResumeTimer);
+            speakResumeTimer = null;
+          }
+          applyListenGate(!!data.blocked);
+          if (!data.blocked && !userMicPaused) {
+            setStatus('listening', 'Listening');
+          }
+        }
         if (data.type === 'telemetry') updateTelemetry(data.data);
         if (data.type === 'command_center') updateCommandCenter(data.data);
         if (data.type === 'permission_notice') {
@@ -1020,16 +1112,23 @@
           addChat('jarvis', data.response);
           setStatus('speaking', data.response);
           narrationFeed.classList.remove('visible');
-          const speakMs = Math.min(14000, Math.max(1200, data.response.length * 40));
-          setTimeout(() => {
-            setProcessing(false);
-            setStatus(
-              'idle',
-              userMicPaused
-                ? 'Mic paused — say "listen again" or press LISTEN'
-                : 'Standing by — speak your command',
-            );
-          }, speakMs);
+          // Self-listen guard: do NOT estimate TTS duration — wait for
+          // server listen_gate / idle|listening status after real playback.
+          if (!hardMuteDuringSpeak()) {
+            const speakMs = Math.min(14000, Math.max(1200, data.response.length * 40));
+            if (speakResumeTimer) clearTimeout(speakResumeTimer);
+            speakResumeTimer = setTimeout(() => {
+              setProcessing(false);
+              setStatus(
+                'idle',
+                userMicPaused
+                  ? 'Mic paused — say "listen again" or press LISTEN'
+                  : 'Standing by — speak your command',
+              );
+            }, speakMs);
+          } else {
+            applyListenGate(true);
+          }
         }
       };
       ws.onclose = () => setTimeout(connect, 2000);

@@ -16,6 +16,8 @@ BLOCKED_SHELL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/\s*$",
         r"\brm\s+-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\s+/\s*$",
         r"\bmkfs\b",
+        r"\bdiskutil\s+(eraseDisk|eraseVolume|partitionDisk)\b",
+        r"\bdiskutil\s+erase\b",
         r":\(\)\s*\{\s*:\|:\s*&\s*\}\s*;",
     )
 )

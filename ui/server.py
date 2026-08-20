@@ -13,8 +13,8 @@ from typing import Any, Callable, Optional
 
 from aiohttp import web
 
-from system.hud_stats import get_telemetry
-from ui.hud_data import build_command_center
+from system.hud_stats import get_telemetry, make_telemetry_supplier
+from core.rest_api import attach_rest_routes
 
 UI_DIR = Path(__file__).resolve().parent
 
@@ -35,6 +35,9 @@ class JarvisUI:
         data_provider: Optional[DataProvider] = None,
         command_center_interval: float = 5.0,
         on_confirm: Optional[ConfirmHandler] = None,
+        telemetry_supplier: Optional[Callable[[], dict[str, Any]]] = None,
+        os_core: Any = None,
+        command_handler: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self.port = port
         self.mic_config = mic_config or {}
@@ -42,11 +45,16 @@ class JarvisUI:
         self.open_browser = open_browser
         self.desktop_mode = desktop_mode
         self.telemetry_interval = telemetry_interval
-        self.command_center_interval = max(2.0, float(command_center_interval))
+        self.command_center_interval = max(5.0, float(command_center_interval))
         self.data_provider = data_provider
         self.on_confirm = on_confirm
+        self._telemetry_supplier = telemetry_supplier
+        self.os_core = os_core
+        self.command_handler = command_handler
         self.on_mic_control: Optional[Callable[[bool, bool], None]] = None
         self._mic_enabled = True
+        self._listen_gate_blocked = False
+        self._voice_accept_fn: Optional[Callable[[str], bool]] = None
         self._clients: set[web.WebSocketResponse] = set()
         self._command_queue: queue.Queue[str] = queue.Queue()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -56,6 +64,12 @@ class JarvisUI:
         self._app.router.add_get("/", self._index)
         self._app.router.add_get("/ws", self._websocket)
         self._app.router.add_get("/api/command-center", self._api_command_center)
+        attach_rest_routes(
+            self._app,
+            os_core=os_core,
+            command_fn=command_handler,
+            state_fn=self._snapshot,
+        )
 
     async def _index(self, request: web.Request) -> web.Response:
         html = (UI_DIR / "index.html").read_text(encoding="utf-8")
@@ -75,7 +89,10 @@ class JarvisUI:
                 "require_wake_word": self.mic_config.get("require_wake_word", False),
                 "min_confidence": self.mic_config.get("min_confidence", 0.55),
                 "pause_while_busy": self.mic_config.get("pause_while_busy", True),
-                "min_command_length": self.mic_config.get("min_command_length", 3),
+                "self_listen_guard": self.mic_config.get("self_listen_guard", True),
+                "post_tts_cooldown_ms": self.mic_config.get("post_tts_cooldown_ms", 220),
+                "min_command_length": self.mic_config.get("min_command_length", 4),
+                "utterance_debounce_ms": self.mic_config.get("utterance_debounce_ms", 1400),
                 "always_listen": self.mic_config.get("always_listen", True),
                 "listen_language": self.mic_config.get("listen_language", "tr-TR"),
             },
@@ -88,7 +105,7 @@ class JarvisUI:
         }))
         await ws.send_str(json.dumps({
             "type": "telemetry",
-            "data": get_telemetry(self.jarvis_config.get("model", "composer-2.5")),
+            "data": self._build_telemetry(),
         }))
         await ws.send_str(json.dumps({
             "type": "mic_state",
@@ -125,6 +142,11 @@ class JarvisUI:
         if msg_type == "command":
             text = (data.get("text") or "").strip()
             if text:
+                # Drop STT that arrives while TTS/processing (self-listen guard)
+                if self._listen_gate_blocked and self.mic_config.get("self_listen_guard", True):
+                    accept = self._voice_accept_fn
+                    if accept is None or not accept(text):
+                        return
                 self.broadcast("thinking", text)
                 self._command_queue.put(text)
             return
@@ -160,6 +182,26 @@ class JarvisUI:
         self._mic_enabled = enabled
         self._emit({"type": "mic_state", "enabled": enabled})
 
+    def send_listen_gate(self, blocked: bool) -> None:
+        """Hard mute browser/native STT while TTS is speaking."""
+        self._listen_gate_blocked = bool(blocked)
+        self._emit({
+            "type": "listen_gate",
+            "blocked": self._listen_gate_blocked,
+            "self_listen_guard": self.mic_config.get("self_listen_guard", True),
+        })
+
+    def flush_pending_commands(self) -> None:
+        """Discard queued STT transcripts (echo from own TTS)."""
+        while True:
+            try:
+                self._command_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def set_voice_accept_fn(self, fn: Optional[Callable[[str], bool]]) -> None:
+        self._voice_accept_fn = fn
+
     def wait_for_command(self, timeout: float = 0.3) -> Optional[str]:
         try:
             return self._command_queue.get(timeout=timeout)
@@ -183,7 +225,20 @@ class JarvisUI:
             "status": "speaking",
             "detail": response,
         })
-        self.send_command_center()
+        # Throttle CC rebuild — full diagnostics are expensive
+        now = time.monotonic()
+        last = getattr(self, "_last_cc_push", 0.0)
+        if now - last >= max(8.0, self.command_center_interval * 0.8):
+            self._last_cc_push = now
+            self.send_command_center()
+
+    def _build_telemetry(self) -> dict[str, Any]:
+        if self._telemetry_supplier is not None:
+            try:
+                return self._telemetry_supplier()
+            except Exception:
+                pass
+        return get_telemetry(self.jarvis_config)
 
     def send_telemetry(self, data: dict[str, Any]) -> None:
         self._emit({"type": "telemetry", "data": data})
@@ -220,10 +275,9 @@ class JarvisUI:
                 self._clients.discard(client)
 
     def _telemetry_loop(self) -> None:
-        model = self.jarvis_config.get("model", "composer-2.5")
         elapsed = 0.0
         while not self._telemetry_stop.is_set():
-            self.send_telemetry(get_telemetry(model))
+            self.send_telemetry(self._build_telemetry())
             elapsed += self.telemetry_interval
             if elapsed >= self.command_center_interval:
                 self.send_command_center()

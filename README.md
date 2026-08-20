@@ -5,11 +5,11 @@ Tony Stark'ın yapay zeka asistanı **JARVIS**'i Cursor API ile sıfırdan inşa
 ## Özellikler
 
 - **Sesli konuşma** — "Jarvis" uyandırma kelimesi ile sürekli dinleme
-- **British accent TTS** — Filmdeki JARVIS gibi İngiliz aksanı (`en-GB-RyanNeural`)
-- **Cursor API beyin** — Cursor SDK ile çok turlu akıllı sohbet
-- **Iron Man HUD** — Arc Reactor tarzı gerçek zamanlı arayüz
-- **macOS kontrolü** — Uygulama açma, ses, saat/tarih
-- **Türkçe + İngilizce** — Hem Türkçe hem İngilizce komutları anlar
+- **Türkçe ses** — `tr-TR-EmelNeural` (edge-tts), SSML durakları, sakin profesyonel tempo
+- **Cursor API beyin** — Cursor SDK ile çok turlu akıllı sohbet (DeepBrain)
+- **Iron Man HUD** — komuta merkezi; durum: Listening / Thinking / Working / Speaking
+- **macOS kontrolü** — uygulama, takvim, mail, ekran, GitHub (`gh` / `GITHUB_TOKEN`)
+- **Türkçe-only UX** — yanıtlar Türkçe; İngilizce TTS kapalı
 
 ## Gereksinimler
 
@@ -89,25 +89,42 @@ Mevcut ses / HUD / Cursor / wake word yolu korunur. Detay: `docs/JARVIS_2_ARCHIT
 # Birim + entegrasyon testleri
 .venv/bin/python -m unittest discover -s tests -v
 
-# Opsiyonel browser otomasyonu
+# Emel ses örneği (MP3 üretir)
+.venv/bin/python scripts/test_voice.py --play
+
+# REST (HUD açıkken, localhost)
+# GET  http://127.0.0.1:8765/api/health
+# GET  http://127.0.0.1:8765/api/state
+# POST http://127.0.0.1:8765/api/command  {"text":"saat kaç"}
+
+# Opsiyonel browser otomasyonu (click/fill)
+# macOS 12 (Monterey): requirements-optional.txt Playwright <1.62 pinler (1.62+ chromium yok).
+# Chromium yoksa boot bozulmaz; browser.open_url çalışır. Ayrıntı: docs/MACOS_PERMISSIONS.md
 pip install -r requirements-optional.txt && playwright install chromium
 ```
+
+GitHub: `.env` içine `GITHUB_TOKEN=` veya `gh auth login` (token commit edilmez).
+MCP: `config.yaml` → `jarvis2.mcp.servers` (boş liste ile boot olur).
+Ekran Kaydı: `docs/MACOS_PERMISSIONS.md`.
 
 `config.yaml` → `jarvis2.enabled: false` ile v2 çekirdeği kapatılabilir.
 
 Örnek komutlar: «Jarvis status», «sistem durumunu kontrol et», «Jettel üzerinde çalış», «plan and organize», «İndirilenlere PDF gelince söyle …», «yedekle», «Jarvis dur».
 ## Ses ayarları
 
-`config.yaml` veya `.env` ile özelleştirin:
+`config.yaml` → `voice:` (Türkçe-only, varsayılan Emel):
 
 ```yaml
-jarvis:
-  voice: en-GB-RyanNeural
-  language: tr-TR
-  user_name: sir
+voice:
+  turkish_voice: tr-TR-EmelNeural
+  rate: -10%
+  pitch: -4Hz
+  ssml: true
 ```
 
-Alternatif İngiliz sesler: `en-GB-ThomasNeural`, `en-GB-LibbyNeural`
+Örnek cümle: `.venv/bin/python scripts/test_voice.py --out /tmp/jarvis_emel.mp3 && afplay /tmp/jarvis_emel.mp3`
+
+Yelda (`say -v Yelda`) yalnızca Emel denemeleri bittikten sonra yedek.
 
 ## Sorun giderme
 

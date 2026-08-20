@@ -126,6 +126,12 @@ class ContextFollowupTests(unittest.TestCase):
         resolved = ctx.resolve_followup("şimdi onu aç")
         self.assertIn("github", resolved.lower())
 
+    def test_followup_video_after_chrome_is_youtube(self) -> None:
+        ctx = ContextManager()
+        ctx.record_open_action(kind="open_app", name="chrome")
+        resolved = ctx.resolve_followup("orada video aç")
+        self.assertEqual(resolved.lower(), "youtube aç")
+
 
 class LlmPlannerFallbackTests(unittest.TestCase):
     def test_parse_llm_json(self) -> None:
@@ -156,7 +162,7 @@ class DiagnosticsCoverageTests(unittest.TestCase):
         m = CommandRouter().route("sistem durumunu kontrol et")
         self.assertIsNotNone(m)
         assert m is not None
-        self.assertEqual(m.request.tool_name, "diagnostics.health")
+        self.assertEqual(m.request.tool_name, "system.health")
 
     def test_health_includes_new_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

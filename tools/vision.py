@@ -12,9 +12,31 @@ logger = logging.getLogger(__name__)
 
 DescribeImageFn = Callable[[Path], str]
 
+SCREEN_RECORDING_HELP_EN = (
+    "Screen Recording permission is missing. "
+    "System Settings → Privacy & Security → Screen Recording — enable Terminal/Python, then restart JARVIS."
+)
+# Legacy alias
+SCREEN_RECORDING_HELP_TR = SCREEN_RECORDING_HELP_EN
+
 
 def tesseract_available() -> bool:
     return shutil.which("tesseract") is not None
+
+
+def is_screen_permission_error(message: str) -> bool:
+    lower = (message or "").lower()
+    needles = (
+        "not authorized",
+        "not permitted",
+        "permission denied",
+        "tcc",
+        "screen capturing",
+        "kcgerror",
+        "screen recording tcc",
+        "may be denied",
+    )
+    return any(n in lower for n in needles)
 
 
 def vision_status() -> dict[str, Any]:
@@ -69,5 +91,13 @@ def capture_screen(path: Path) -> tuple[bool, str]:
         return False, "Screen capture timed out"
     if result.returncode != 0 or not path.exists():
         err = (result.stderr or result.stdout or "capture failed").strip()
+        if not err:
+            err = "capture failed — Screen Recording TCC may be denied"
         return False, err[:300]
+    # Zero-byte files often mean TCC denied a blank capture
+    try:
+        if path.stat().st_size == 0:
+            return False, "capture failed — Screen Recording TCC may be denied"
+    except OSError:
+        return False, "capture failed"
     return True, str(path)

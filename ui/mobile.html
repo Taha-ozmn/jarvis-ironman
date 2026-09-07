@@ -1,0 +1,1254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="JARVIS" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#020810" />
+  <title>J.A.R.V.I.S. Mobile</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    :root {
+      --font-ui: 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif;
+      --font-hud: 'SF Mono', 'Menlo', monospace;
+      --cyan: #00d4ff;
+      --green: #00ff88;
+      --amber: #ffaa00;
+      --red: #ff3344;
+      --bg: #020810;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--cyan);
+      font-family: var(--font-ui);
+      overflow: hidden;
+      touch-action: manipulation;
+    }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      padding: calc(0.75rem + var(--safe-top)) 1rem calc(0.75rem + var(--safe-bottom));
+      background:
+        radial-gradient(ellipse at 50% 0%, rgba(0, 80, 120, 0.25) 0%, transparent 55%),
+        var(--bg);
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+
+    .brand {
+      font-family: var(--font-hud);
+      font-size: 0.95rem;
+      letter-spacing: 0.35em;
+      text-shadow: 0 0 18px rgba(0, 212, 255, 0.45);
+    }
+
+    .link-pill {
+      font-family: var(--font-hud);
+      font-size: 0.55rem;
+      letter-spacing: 0.08em;
+      padding: 0.35rem 0.55rem;
+      border: 1px solid rgba(0, 255, 136, 0.35);
+      border-radius: 999px;
+      color: var(--green);
+      background: rgba(0, 255, 136, 0.06);
+    }
+    .link-pill.offline {
+      border-color: rgba(255, 51, 68, 0.5);
+      color: var(--red);
+      background: rgba(255, 51, 68, 0.08);
+    }
+
+    .install-banner {
+      display: none;
+      margin-bottom: 0.6rem;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid rgba(0, 212, 255, 0.35);
+      border-radius: 8px;
+      background: rgba(0, 212, 255, 0.06);
+      font-size: 0.78rem;
+      line-height: 1.35;
+      color: #aaddff;
+    }
+    .install-banner.visible { display: block; }
+    .install-banner button {
+      margin-top: 0.45rem;
+      background: rgba(0, 212, 255, 0.15);
+      border: 1px solid var(--cyan);
+      color: var(--cyan);
+      font-family: var(--font-hud);
+      font-size: 0.6rem;
+      letter-spacing: 0.1em;
+      padding: 0.45rem 0.75rem;
+      border-radius: 4px;
+    }
+
+    .telemetry {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.45rem;
+      margin-bottom: 0.75rem;
+    }
+    .tel {
+      border: 1px solid rgba(0, 212, 255, 0.18);
+      background: rgba(0, 15, 30, 0.55);
+      padding: 0.45rem 0.5rem;
+      border-radius: 6px;
+      text-align: center;
+    }
+    .tel .label {
+      font-family: var(--font-hud);
+      font-size: 0.48rem;
+      letter-spacing: 0.12em;
+      opacity: 0.55;
+    }
+    .tel .val {
+      font-family: var(--font-hud);
+      font-size: 0.72rem;
+      color: #aaddff;
+      margin-top: 0.15rem;
+    }
+
+    .monitor {
+      width: 100%;
+      margin-bottom: 0.55rem;
+      padding: 0.55rem 0.65rem;
+      border: 1px solid rgba(0, 212, 255, 0.18);
+      border-radius: 6px;
+      background: rgba(0, 15, 30, 0.55);
+      font-family: var(--font-hud);
+      font-size: 0.62rem;
+      line-height: 1.35;
+      color: #aaddff;
+    }
+    .monitor .label {
+      color: var(--cyan);
+      letter-spacing: 0.12em;
+      opacity: 0.7;
+      margin-bottom: 0.2rem;
+    }
+
+    .stage {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+      position: relative;
+    }
+
+    .reactor {
+      width: min(42vw, 168px);
+      height: min(42vw, 168px);
+      border-radius: 50%;
+      border: 3px solid var(--cyan);
+      background: radial-gradient(circle, #001a33 30%, #003366 60%, #001122 100%);
+      box-shadow: 0 0 36px rgba(0, 212, 255, 0.28);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      transition: border-color 0.35s, box-shadow 0.35s;
+    }
+    .reactor.listening { border-color: var(--green); box-shadow: 0 0 32px rgba(0, 255, 136, 0.25); }
+    .reactor.thinking, .reactor.working { border-color: var(--amber); box-shadow: 0 0 32px rgba(255, 170, 0, 0.22); }
+    .reactor.speaking { border-color: var(--cyan); animation: pulse 1.6s ease-in-out infinite; }
+    .reactor.recording { border-color: var(--green); animation: pulse 0.8s ease-in-out infinite; }
+    .reactor.error { border-color: var(--red); }
+
+    .reactor-core {
+      width: 28%;
+      height: 28%;
+      border-radius: 50%;
+      background: radial-gradient(circle, #fff 0%, var(--cyan) 50%, #0066aa 100%);
+      box-shadow: 0 0 20px var(--cyan);
+    }
+
+    .status-label {
+      margin-top: 0.85rem;
+      font-family: var(--font-hud);
+      font-size: 0.72rem;
+      letter-spacing: 0.28em;
+      opacity: 0.75;
+    }
+
+    .status-detail {
+      margin-top: 0.45rem;
+      font-size: 0.92rem;
+      color: #aaddff;
+      text-align: center;
+      line-height: 1.4;
+      max-width: 92vw;
+      min-height: 1.2rem;
+      padding: 0 0.5rem;
+    }
+
+    .chat {
+      flex: 0 0 auto;
+      max-height: 34vh;
+      overflow-y: auto;
+      width: 100%;
+      margin: 0.75rem 0;
+      padding: 0.5rem;
+      border: 1px solid rgba(0, 212, 255, 0.15);
+      border-radius: 8px;
+      background: rgba(0, 12, 24, 0.65);
+      -webkit-overflow-scrolling: touch;
+    }
+    .bubble {
+      margin: 0.35rem 0;
+      padding: 0.5rem 0.65rem;
+      border-radius: 10px;
+      font-size: 0.88rem;
+      line-height: 1.35;
+      max-width: 92%;
+      word-break: break-word;
+    }
+    .bubble.you {
+      margin-left: auto;
+      background: rgba(0, 255, 136, 0.1);
+      border: 1px solid rgba(0, 255, 136, 0.25);
+      color: #88ffcc;
+    }
+    .bubble.jarvis {
+      background: rgba(0, 212, 255, 0.08);
+      border: 1px solid rgba(0, 212, 255, 0.2);
+      color: #aaddff;
+    }
+    .bubble.narrate {
+      font-size: 0.75rem;
+      opacity: 0.85;
+      color: var(--amber);
+      border: none;
+      background: transparent;
+      padding-left: 0;
+    }
+
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+      width: 100%;
+    }
+
+    .mic-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+    }
+
+    .mic-btn {
+      width: 84px;
+      height: 84px;
+      border-radius: 50%;
+      border: 2px solid var(--green);
+      background: radial-gradient(circle at 30% 30%, rgba(0, 255, 136, 0.25), rgba(0, 40, 30, 0.9));
+      color: var(--green);
+      font-family: var(--font-hud);
+      font-size: 0.55rem;
+      letter-spacing: 0.08em;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      user-select: none;
+      touch-action: none;
+      box-shadow: 0 0 24px rgba(0, 255, 136, 0.2);
+    }
+    .mic-btn:active, .mic-btn.recording {
+      border-color: #fff;
+      color: #fff;
+      background: radial-gradient(circle at 30% 30%, rgba(0, 255, 136, 0.55), rgba(0, 80, 60, 0.95));
+      transform: scale(1.04);
+    }
+    .mic-btn.disabled {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+
+    .mode-btn {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      border: 1px solid rgba(0, 212, 255, 0.35);
+      background: rgba(0, 212, 255, 0.08);
+      color: var(--cyan);
+      font-size: 1.1rem;
+    }
+
+    .text-row {
+      display: flex;
+      gap: 0.45rem;
+    }
+    .text-row input {
+      flex: 1;
+      background: rgba(0, 212, 255, 0.06);
+      border: 1px solid rgba(0, 212, 255, 0.28);
+      color: #aaddff;
+      padding: 0.65rem 0.75rem;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+    .text-row button {
+      background: rgba(0, 212, 255, 0.12);
+      border: 1px solid var(--cyan);
+      color: var(--cyan);
+      padding: 0 1rem;
+      border-radius: 8px;
+      font-family: var(--font-hud);
+      font-size: 0.62rem;
+      letter-spacing: 0.1em;
+    }
+
+    .hint {
+      text-align: center;
+      font-size: 0.68rem;
+      opacity: 0.5;
+      letter-spacing: 0.06em;
+    }
+
+    .confirm-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(2, 8, 16, 0.85);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .confirm-overlay.visible { display: flex; }
+    .confirm-card {
+      width: min(400px, 100%);
+      border: 1px solid var(--red);
+      background: #0a1018;
+      padding: 1.1rem;
+      border-radius: 10px;
+    }
+    .confirm-card h2 {
+      font-family: var(--font-hud);
+      font-size: 0.75rem;
+      letter-spacing: 0.2em;
+      color: var(--red);
+      margin-bottom: 0.6rem;
+    }
+    .confirm-card p { color: #ffc8d0; font-size: 0.9rem; line-height: 1.4; margin-bottom: 0.75rem; }
+    .confirm-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+    .confirm-actions button {
+      font-family: var(--font-hud);
+      font-size: 0.62rem;
+      letter-spacing: 0.1em;
+      padding: 0.55rem 0.9rem;
+      border: 1px solid;
+      background: transparent;
+      border-radius: 6px;
+    }
+    .confirm-actions .deny { border-color: var(--red); color: var(--red); }
+    .confirm-actions .approve { border-color: var(--green); color: var(--green); }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.03); }
+    }
+
+    .host-warning {
+      position: fixed;
+      inset: 0;
+      z-index: 300;
+      background: rgba(2, 8, 16, 0.96);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .host-warning.visible { display: flex; }
+    .host-warning-card {
+      max-width: 360px;
+      border: 1px solid var(--amber);
+      border-radius: 10px;
+      padding: 1.25rem;
+      text-align: center;
+    }
+    .host-warning-card h2 {
+      font-family: var(--font-hud);
+      font-size: 0.75rem;
+      letter-spacing: 0.2em;
+      color: var(--amber);
+      margin-bottom: 0.75rem;
+    }
+    .host-warning-card p {
+      color: #ffc8a0;
+      font-size: 0.85rem;
+      line-height: 1.45;
+      margin-bottom: 0.75rem;
+    }
+    .host-warning-card .fix-url {
+      font-family: var(--font-hud);
+      font-size: 0.72rem;
+      color: var(--green);
+      word-break: break-all;
+      padding: 0.6rem;
+      border: 1px solid rgba(0, 255, 136, 0.35);
+      border-radius: 6px;
+    }
+
+    .mic-permission {
+      position: fixed;
+      inset: 0;
+      z-index: 250;
+      background: rgba(2, 8, 16, 0.94);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .mic-permission.visible { display: flex; }
+    .mic-permission-card {
+      max-width: 360px;
+      width: 100%;
+      border: 1px solid var(--cyan);
+      border-radius: 10px;
+      padding: 1.35rem;
+      text-align: center;
+      background: rgba(0, 212, 255, 0.05);
+    }
+    .mic-permission-card h2 {
+      font-family: var(--font-hud);
+      font-size: 0.75rem;
+      letter-spacing: 0.2em;
+      margin-bottom: 0.75rem;
+    }
+    .mic-permission-card p {
+      color: #aaddff;
+      font-size: 0.85rem;
+      line-height: 1.45;
+      margin-bottom: 1rem;
+      opacity: 0.9;
+    }
+    .mic-permission-card button {
+      width: 100%;
+      background: rgba(0, 212, 255, 0.18);
+      border: 1px solid var(--cyan);
+      color: var(--cyan);
+      font-family: var(--font-hud);
+      font-size: 0.7rem;
+      letter-spacing: 0.14em;
+      padding: 0.85rem 1rem;
+      border-radius: 6px;
+    }
+    .mic-permission-card .skip {
+      margin-top: 0.65rem;
+      background: transparent;
+      border-color: rgba(0, 212, 255, 0.25);
+      opacity: 0.7;
+    }
+  </style>
+</head>
+<body>
+  <div class="host-warning" id="host-warning">
+    <div class="host-warning-card">
+      <h2>WRONG ADDRESS</h2>
+      <p>127.0.0.1 only works on your Mac. On iPhone, use your Mac's Wi‑Fi address instead.</p>
+      <div class="fix-url" id="fix-url">Ask JARVIS on the Mac for the phone link, or open /connect on the desktop HUD.</div>
+    </div>
+  </div>
+  <div class="mic-permission" id="mic-permission">
+    <div class="mic-permission-card">
+      <h2>MICROPHONE ACCESS</h2>
+      <p id="mic-permission-text">Safari needs your permission before hold-to-talk works. Tap below, then Allow when prompted.</p>
+      <button type="button" id="mic-enable-btn">ENABLE MICROPHONE</button>
+      <button type="button" class="skip" id="mic-skip-btn">USE TEXT ONLY</button>
+    </div>
+  </div>
+  <div class="app">
+    <header>
+      <div class="brand">J.A.R.V.I.S.</div>
+      <div class="link-pill offline" id="link-pill">LINKING…</div>
+    </header>
+
+    <div class="install-banner" id="install-banner">
+      Install on your Home Screen for a full-screen app with microphone access.
+      <button type="button" id="install-dismiss">GOT IT</button>
+    </div>
+
+    <div class="telemetry">
+      <div class="tel"><div class="label">MAC TIME</div><div class="val" id="tel-time">--:--</div></div>
+      <div class="tel"><div class="label">STATUS</div><div class="val" id="tel-status">--</div></div>
+      <div class="tel"><div class="label">CORE</div><div class="val" id="tel-core">--</div></div>
+    </div>
+    <div class="monitor">
+      <div class="label">CURRENT SCREEN</div>
+      <div id="screen-summary">Waiting for a screen update…</div>
+    </div>
+
+    <div class="stage">
+      <div class="reactor booting" id="reactor">
+        <div class="reactor-core"></div>
+      </div>
+      <div class="status-label" id="status-label">CONNECTING</div>
+      <div class="status-detail" id="status-detail">Linking to your Mac…</div>
+    </div>
+
+    <div class="chat" id="chat"></div>
+
+    <div class="controls">
+      <div class="mic-row">
+        <button type="button" class="mode-btn" id="keyboard-toggle" title="Text input">⌨</button>
+        <button type="button" class="mic-btn" id="mic-btn">HOLD<br>TO TALK</button>
+        <button type="button" class="mode-btn" id="always-listen" title="Always listen">👂</button>
+      </div>
+      <div class="text-row" id="text-row" style="display:none">
+        <input id="text-input" placeholder="Command…" enterkeyhint="send" />
+        <button type="button" id="send-btn">SEND</button>
+      </div>
+      <div class="hint" id="mic-hint">Always listening — speak naturally; synced live with your Mac</div>
+    </div>
+  </div>
+
+  <div class="confirm-overlay" id="confirm-overlay">
+    <div class="confirm-card">
+      <h2>AUTHORISATION REQUIRED</h2>
+      <p id="confirm-action">—</p>
+      <div class="confirm-actions">
+        <button type="button" class="deny" id="confirm-deny">DENY</button>
+        <button type="button" class="approve" id="confirm-approve">AUTHORISE</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const pairingParams = new URLSearchParams(window.location.search);
+    const pairingToken = pairingParams.get('pairing') ||
+      localStorage.getItem('jarvis_pairing_token') || '';
+    if (pairingToken) localStorage.setItem('jarvis_pairing_token', pairingToken);
+
+    function pairingHeaders() {
+      return pairingToken
+        ? { 'X-Jarvis-Pairing-Token': pairingToken }
+        : {};
+    }
+
+    const reactor = document.getElementById('reactor');
+    const statusLabel = document.getElementById('status-label');
+    const statusDetail = document.getElementById('status-detail');
+    const chat = document.getElementById('chat');
+    const micBtn = document.getElementById('mic-btn');
+    const linkPill = document.getElementById('link-pill');
+    const installBanner = document.getElementById('install-banner');
+    const textRow = document.getElementById('text-row');
+    const textInput = document.getElementById('text-input');
+    const micHint = document.getElementById('mic-hint');
+
+    const statusMap = {
+      booting: 'BOOT',
+      idle: 'STANDBY',
+      listening: 'LISTENING',
+      thinking: 'THINKING',
+      working: 'WORKING',
+      speaking: 'SPEAKING',
+      error: 'FAULT',
+    };
+
+    let ws = null;
+    let wsConnected = false;
+    let processing = false;
+    let listenGateBlocked = false;
+    let listenGateReleaseAt = 0;
+    let alwaysListen = true;
+    let recognition = null;
+    let mediaRecorder = null;
+    let mediaStream = null;
+    let recordChunks = [];
+    let recording = false;
+    let pendingConfirmId = null;
+    let wakeLock = null;
+    let speechVoices = [];
+    let speechUnlocked = false;
+    let phoneAudio = null;
+    let phoneTtsEnabled = true;
+    let speakFallbackTimer = null;
+    let recognitionRestartTimer = null;
+    let recognitionBusy = false;
+    let phoneSpeaking = false;
+    let micGranted = localStorage.getItem('jarvis_mic_granted') === '1';
+    let micPromptDismissed = localStorage.getItem('jarvis_mic_skip') === '1';
+
+    const micPermissionEl = document.getElementById('mic-permission');
+    const micPermissionText = document.getElementById('mic-permission-text');
+    const micEnableBtn = document.getElementById('mic-enable-btn');
+    const micSkipBtn = document.getElementById('mic-skip-btn');
+
+    const micConfig = {
+      min_confidence: 0.5,
+      min_command_length: 4,
+      listen_language: 'tr-TR',
+      listen_languages: ['tr-TR', 'en-US'],
+      utterance_debounce_ms: 1200,
+    };
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const canWebSpeech = !!SpeechRecognition && window.isSecureContext;
+    const canRecordAudio = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+    function hideMicPermission() {
+      micPermissionEl.classList.remove('visible');
+    }
+
+    function showMicPermission(message) {
+      if (micGranted || micPromptDismissed) return;
+      if (message) micPermissionText.textContent = message;
+      micPermissionEl.classList.add('visible');
+    }
+
+    async function requestMicPermission() {
+      unlockSpeech();
+      if (!window.isSecureContext) {
+        micPermissionText.textContent =
+          'Microphone requires the secure HTTPS link from your Mac. Switching now…';
+        showMicPermission();
+        try {
+          const res = await fetch('/api/connect', { headers: pairingHeaders() });
+          const data = await res.json();
+          if (data.ok && data.tls_enabled && data.mobile_url) {
+            location.replace(data.mobile_url);
+          }
+        } catch (_) {}
+        return false;
+      }
+      if (!canRecordAudio) {
+        setStatus('error', 'Microphone API unavailable in this browser');
+        return false;
+      }
+      try {
+        const stream = await ensureMicStream();
+        stream.getTracks().forEach((track) => { track.enabled = true; });
+        micGranted = true;
+        localStorage.setItem('jarvis_mic_granted', '1');
+        hideMicPermission();
+        setStatus(
+          'listening',
+          alwaysListen ? 'Always listening — speak naturally' : 'Microphone ready — hold to speak'
+        );
+        micHint.textContent = alwaysListen
+          ? 'Always listening — speak naturally; synced live with your Mac'
+          : 'Hold the button to speak — synced live with your Mac';
+        if (alwaysListen && canWebSpeech && recognition) {
+          scheduleRecognitionRestart(120);
+        }
+        return true;
+      } catch (err) {
+        const name = err && err.name ? err.name : '';
+        if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+          showMicPermission('Microphone blocked. Settings → Safari → Microphone → allow for this site, then tap Enable again.');
+        } else {
+          showMicPermission('Could not access the microphone. Use the HTTPS phone link from /connect on your Mac.');
+        }
+        return false;
+      }
+    }
+
+    function maybePromptMicAccess() {
+      if (micGranted || micPromptDismissed || !wsConnected) return;
+      if (!window.isSecureContext) {
+        showMicPermission('iPhone blocks the microphone on plain HTTP. Switching you to the secure HTTPS link…');
+        requestMicPermission();
+        return;
+      }
+      if (canRecordAudio) showMicPermission();
+    }
+
+    function initSpeech() {
+      if (!window.speechSynthesis) return;
+      const loadVoices = () => {
+        speechVoices = window.speechSynthesis.getVoices() || [];
+      };
+      loadVoices();
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    function ensurePhoneAudio() {
+      if (!phoneAudio) phoneAudio = new Audio();
+      return phoneAudio;
+    }
+
+    function unlockSpeech() {
+      if (speechUnlocked && phoneAudio) return;
+      speechUnlocked = true;
+      if (window.speechSynthesis) {
+        const primer = new SpeechSynthesisUtterance(' ');
+        primer.volume = 0;
+        window.speechSynthesis.speak(primer);
+        window.speechSynthesis.cancel();
+      }
+      const audio = ensurePhoneAudio();
+      audio.src = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAADhAC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAA4T/UMAA';
+      audio.volume = 0.01;
+      audio.play().catch(() => {});
+    }
+
+    function speakFallback(text) {
+      if (!phoneTtsEnabled) {
+        scheduleRecognitionRestart(320);
+        return;
+      }
+      speakOnPhone(text);
+    }
+
+    function clearSpeakFallback() {
+      if (speakFallbackTimer) {
+        clearTimeout(speakFallbackTimer);
+        speakFallbackTimer = null;
+      }
+    }
+
+    function queuePhoneSpeech(text) {
+      clearSpeakFallback();
+      const line = (text || '').trim();
+      if (!line) return;
+      speakFallbackTimer = setTimeout(() => speakFallback(line), 4500);
+    }
+
+    function playPhoneAudio(b64, text) {
+      clearSpeakFallback();
+      const line = (text || '').trim();
+      if (!b64) {
+        speakFallback(line);
+        return;
+      }
+      unlockSpeech();
+      const audio = ensurePhoneAudio();
+      phoneSpeaking = true;
+      if (recognition) {
+        try { recognition.abort(); } catch (_) {}
+      }
+      audio.onplay = () => {
+        phoneSpeaking = true;
+        listenGateReleaseAt = performance.now() + 400;
+      };
+      audio.onended = () => {
+        phoneSpeaking = false;
+        setProcessing(false);
+        setStatus('listening', alwaysListen ? 'Always listening…' : 'Standing by — hold to speak');
+        scheduleRecognitionRestart(420);
+      };
+      audio.onerror = () => {
+        phoneSpeaking = false;
+        speakFallback(line);
+        scheduleRecognitionRestart(420);
+      };
+      audio.src = `data:audio/mpeg;base64,${b64}`;
+      audio.play().catch(() => {
+        phoneSpeaking = false;
+        speakFallback(line);
+        scheduleRecognitionRestart(420);
+      });
+    }
+
+    function speakOnPhone(text) {
+      const line = (text || '').trim();
+      if (!line || !window.speechSynthesis) {
+        scheduleRecognitionRestart(320);
+        return;
+      }
+      window.speechSynthesis.cancel();
+      phoneSpeaking = true;
+      const utterance = new SpeechSynthesisUtterance(line);
+      utterance.lang = 'en-GB';
+      utterance.rate = 0.94;
+      const voice =
+        speechVoices.find((v) => v.lang.startsWith('en-GB')) ||
+        speechVoices.find((v) => v.lang.startsWith('en'));
+      if (voice) utterance.voice = voice;
+      utterance.onend = () => {
+        phoneSpeaking = false;
+        setProcessing(false);
+        scheduleRecognitionRestart(420);
+      };
+      utterance.onerror = () => {
+        phoneSpeaking = false;
+        setProcessing(false);
+        scheduleRecognitionRestart(420);
+      };
+      window.speechSynthesis.speak(utterance);
+    }
+
+    function addBubble(who, text) {
+      const el = document.createElement('div');
+      el.className = 'bubble ' + who;
+      el.textContent = text;
+      chat.appendChild(el);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    function setLink(online) {
+      wsConnected = online;
+      linkPill.textContent = online ? 'MAC LINKED' : 'RECONNECTING';
+      linkPill.classList.toggle('offline', !online);
+    }
+
+    function setStatus(status, detail) {
+      reactor.className = 'reactor ' + (status || 'idle');
+      if (recording) reactor.classList.add('recording');
+      statusLabel.textContent = statusMap[status] || (status || '').toUpperCase();
+      statusDetail.textContent = detail || '';
+    }
+
+    function setProcessing(active) {
+      processing = active;
+      micBtn.classList.toggle('disabled', active && (listenGateBlocked || phoneSpeaking));
+    }
+
+    function listeningPaused() {
+      return listenGateBlocked || phoneSpeaking || performance.now() < listenGateReleaseAt;
+    }
+
+    function clearRecognitionRestart() {
+      if (recognitionRestartTimer) {
+        clearTimeout(recognitionRestartTimer);
+        recognitionRestartTimer = null;
+      }
+    }
+
+    function scheduleRecognitionRestart(delayMs = 280) {
+      if (!alwaysListen || !canWebSpeech || !recognition) return;
+      clearRecognitionRestart();
+      recognitionRestartTimer = setTimeout(() => {
+        recognitionRestartTimer = null;
+        if (!alwaysListen || !wsConnected) return;
+        if (listeningPaused()) {
+          const wait = Math.max(120, listenGateReleaseAt - performance.now() + 80);
+          scheduleRecognitionRestart(wait);
+          return;
+        }
+        if (recognitionBusy) {
+          scheduleRecognitionRestart(220);
+          return;
+        }
+        recognitionBusy = true;
+        try {
+          recognition.start();
+          setStatus('listening', 'Always listening…');
+        } catch (_) {
+          recognitionBusy = false;
+          scheduleRecognitionRestart(650);
+        }
+      }, Math.max(80, delayMs));
+    }
+
+    function updateTelemetry(d) {
+      if (!d) return;
+      document.getElementById('tel-time').textContent = d.time || '--:--';
+      document.getElementById('tel-status').textContent = d.systems || 'NOMINAL';
+      document.getElementById('tel-core').textContent = d.neural || 'ONLINE';
+    }
+
+    function updateCommandCenter(d) {
+      if (!d) return;
+      const screen = d.screen || {};
+      const line = screen.summary ||
+        [screen.app, screen.title].filter(Boolean).join(' — ') ||
+        'No screen summary available';
+      document.getElementById('screen-summary').textContent = line;
+    }
+
+    async function requestWakeLock() {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen');
+        }
+      } catch (_) {}
+    }
+
+    async function ensureMicStream() {
+      if (mediaStream) return mediaStream;
+      if (!window.isSecureContext) {
+        throw new DOMException('Microphone requires HTTPS on iPhone', 'SecurityError');
+      }
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+      return mediaStream;
+    }
+
+    function pickMimeType() {
+      const types = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/aac',
+      ];
+      for (const type of types) {
+        if (MediaRecorder.isTypeSupported(type)) return type;
+      }
+      return '';
+    }
+
+    async function startRecording() {
+      if (recording || phoneSpeaking) return;
+      if (processing && listenGateBlocked) return;
+      unlockSpeech();
+      try {
+        const stream = await ensureMicStream();
+        recordChunks = [];
+        const mimeType = pickMimeType();
+        mediaRecorder = mimeType
+          ? new MediaRecorder(stream, { mimeType })
+          : new MediaRecorder(stream);
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) recordChunks.push(e.data);
+        };
+        mediaRecorder.onstop = () => uploadRecording();
+        mediaRecorder.start(250);
+        recording = true;
+        micBtn.classList.add('recording');
+        setStatus('listening', 'Recording…');
+        if (navigator.vibrate) navigator.vibrate(20);
+      } catch (err) {
+        const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
+        if (denied && !window.isSecureContext) {
+          setStatus('error', 'Use the HTTPS phone link — microphone blocked on HTTP');
+          requestMicPermission();
+        } else if (denied) {
+          setStatus('error', 'Microphone denied — tap Enable Microphone above');
+          showMicPermission('Allow microphone access when Safari prompts, or enable it in Settings → Safari → Microphone.');
+        } else {
+          setStatus('error', 'Microphone unavailable — retry after enabling access');
+        }
+        micHint.textContent = 'Allow microphone for this site in Settings → Safari';
+      }
+    }
+
+    function stopRecording() {
+      if (!recording || !mediaRecorder) return;
+      recording = false;
+      micBtn.classList.remove('recording');
+      try { mediaRecorder.stop(); } catch (_) {}
+    }
+
+    async function uploadRecording() {
+      if (!recordChunks.length) {
+        setStatus('idle', 'No speech detected — try again');
+        return;
+      }
+      const mimeType = mediaRecorder && mediaRecorder.mimeType ? mediaRecorder.mimeType : 'audio/webm';
+      const blob = new Blob(recordChunks, { type: mimeType });
+      recordChunks = [];
+      if (blob.size < 256) {
+        setStatus('idle', 'Too quiet — hold longer and speak clearly');
+        return;
+      }
+      setStatus('thinking', 'Transcribing on Mac…');
+      setProcessing(true);
+      try {
+        const ext = mimeType.includes('mp4') || mimeType.includes('aac') ? 'm4a' : 'webm';
+        const form = new FormData();
+        form.append('audio', blob, `mobile.${ext}`);
+        const res = await fetch('/api/stt', {
+          method: 'POST',
+          headers: pairingHeaders(),
+          body: form,
+        });
+        const data = await res.json();
+        if (data.ok && data.text) {
+          sendCommand(data.text, true);
+        } else {
+          setProcessing(false);
+          setStatus('idle', data.error || 'Could not understand — please retry');
+          if (alwaysListen) scheduleRecognitionRestart(400);
+        }
+      } catch (_) {
+        setProcessing(false);
+        setStatus('error', 'STT upload failed — check Wi‑Fi link');
+        if (alwaysListen) scheduleRecognitionRestart(600);
+      }
+    }
+
+    function sendCommand(text, fromVoice = false) {
+      const command = (text || '').trim();
+      if (!command || !ws || ws.readyState !== WebSocket.OPEN) return;
+      if (command.length < micConfig.min_command_length) return;
+      addBubble('you', command);
+      ws.send(JSON.stringify({ type: 'command', text: command, source: fromVoice ? 'voice' : 'text' }));
+      setStatus('thinking', command);
+      setProcessing(true);
+    }
+
+    function setupWebSpeech() {
+      if (!canWebSpeech) return;
+      recognition = new SpeechRecognition();
+      recognition.lang = micConfig.listen_language || 'tr-TR';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      let buffer = '';
+      let timer = null;
+
+      recognition.onstart = () => {
+        recognitionBusy = false;
+        if (alwaysListen && !listeningPaused()) {
+          setStatus('listening', 'Always listening…');
+        }
+      };
+
+      recognition.onresult = (event) => {
+        if (!alwaysListen) return;
+        if (listeningPaused()) {
+          buffer = '';
+          if (timer) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          return;
+        }
+        let interim = '';
+        let finalText = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const r = event.results[i];
+          if (r.isFinal) finalText += r[0].transcript;
+          else interim += r[0].transcript;
+        }
+        const preview = (buffer + ' ' + (interim || finalText)).trim();
+        if (preview) setStatus('listening', preview);
+        if (!finalText.trim()) return;
+        buffer = buffer ? `${buffer} ${finalText.trim()}` : finalText.trim();
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          const text = buffer.trim();
+          buffer = '';
+          if (text) sendCommand(text, true);
+        }, micConfig.utterance_debounce_ms || 1200);
+      };
+
+      recognition.onend = () => {
+        recognitionBusy = false;
+        if (alwaysListen) scheduleRecognitionRestart(320);
+      };
+
+      recognition.onerror = (e) => {
+        recognitionBusy = false;
+        if (e.error === 'not-allowed') {
+          setStatus('error', 'Microphone blocked — use hold-to-talk after allowing access');
+          return;
+        }
+        if (e.error === 'aborted' || e.error === 'no-speech') {
+          if (alwaysListen) scheduleRecognitionRestart(420);
+          return;
+        }
+        if (alwaysListen) scheduleRecognitionRestart(800);
+      };
+    }
+
+    function toggleAlwaysListen() {
+      alwaysListen = !alwaysListen;
+      document.getElementById('always-listen').style.borderColor = alwaysListen ? 'var(--green)' : '';
+      if (alwaysListen && canWebSpeech && recognition) {
+        micHint.textContent = 'Always listening via browser speech — synced with Mac';
+        scheduleRecognitionRestart(120);
+        setStatus('listening', 'Always listening…');
+      } else if (alwaysListen && !canWebSpeech) {
+        alwaysListen = false;
+        micHint.textContent = 'Hold-to-talk sends audio to your Mac for transcription (works on iPhone over Wi‑Fi)';
+        setStatus('idle', 'Always-listen needs HTTPS — use hold-to-talk on LAN');
+      } else if (recognition) {
+        try { recognition.stop(); } catch (_) {}
+        micHint.textContent = 'Hold the button to speak — synced live with your Mac';
+        setStatus('idle', 'Standing by');
+      }
+    }
+
+    function connect() {
+      if (!pairingToken) {
+        setLink(false);
+        setStatus('error', 'Pair this iPhone from /connect on the Mac');
+        return;
+      }
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(
+        `${proto}://${location.host}/ws?mobile=1&pairing=${encodeURIComponent(pairingToken)}`
+      );
+      ws.onopen = () => {
+        setLink(true);
+        setStatus(
+          'listening',
+          alwaysListen ? 'Linked to Mac — always listening' : 'Linked to Mac — hold to speak'
+        );
+        requestWakeLock();
+        maybePromptMicAccess();
+        if (alwaysListen && micGranted && canWebSpeech && recognition) {
+          scheduleRecognitionRestart(180);
+        }
+      };
+      ws.onclose = () => {
+        setLink(false);
+        setStatus('error', 'Connection lost — retrying…');
+        setTimeout(connect, 2000);
+      };
+      ws.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        if (data.type === 'config') {
+          if (data.mic) Object.assign(micConfig, data.mic);
+          if (typeof data.phone_tts === 'boolean') phoneTtsEnabled = data.phone_tts;
+        }
+        if (data.type === 'telemetry') updateTelemetry(data.data);
+        if (data.type === 'command_center') updateCommandCenter(data.data);
+        if (data.type === 'listen_gate') {
+          listenGateBlocked = !!data.blocked;
+          if (listenGateBlocked) {
+            listenGateReleaseAt = 0;
+            clearRecognitionRestart();
+            if (recognition) {
+              try { recognition.abort(); } catch (_) {}
+            }
+          } else {
+            const cooldown = Math.max(500, Number(micConfig.post_tts_cooldown_ms || 220));
+            listenGateReleaseAt = performance.now() + cooldown;
+            setProcessing(false);
+            if (alwaysListen) {
+              scheduleRecognitionRestart(cooldown + 120);
+            }
+          }
+        }
+        if (data.type === 'boot' && data.progress >= 100) setStatus('idle', 'All systems nominal');
+        if (data.type === 'narrate') {
+          addBubble('narrate', data.text);
+          queuePhoneSpeech(data.text);
+        }
+        if (data.type === 'status' || data.status) {
+          setStatus(data.status, data.detail || data.thinking_trace || '');
+          if (data.status === 'thinking' || data.status === 'working') setProcessing(true);
+          if (data.status === 'idle' || data.status === 'listening') {
+            setProcessing(false);
+            if (alwaysListen && data.status === 'listening') {
+              scheduleRecognitionRestart(200);
+            }
+          }
+        }
+        if (data.type === 'response') {
+          addBubble('jarvis', data.response);
+          setStatus('speaking', data.response);
+          setProcessing(true);
+          queuePhoneSpeech(data.response);
+          const ms = Math.min(16000, Math.max(2500, (data.response || '').length * 48));
+          setTimeout(() => {
+            setProcessing(false);
+            if (alwaysListen) scheduleRecognitionRestart(320);
+            setStatus('listening', alwaysListen ? 'Always listening…' : 'Standing by — hold to speak');
+          }, ms);
+        }
+        if (data.type === 'speak_audio') {
+          if (data.fallback) {
+            speakFallback(data.text || '');
+            return;
+          }
+          playPhoneAudio(data.audio_b64, data.text || '');
+        }
+        if (data.type === 'confirm_request' && data.data) {
+          pendingConfirmId = data.data.id;
+          document.getElementById('confirm-action').textContent = data.data.action || 'Confirm action';
+          document.getElementById('confirm-overlay').classList.add('visible');
+        }
+        if (data.type === 'confirm_ack') {
+          pendingConfirmId = null;
+          document.getElementById('confirm-overlay').classList.remove('visible');
+        }
+      };
+    }
+
+    function sendConfirm(approved) {
+      if (!pendingConfirmId || !ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: 'confirm_response', id: pendingConfirmId, approved: !!approved }));
+      document.getElementById('confirm-overlay').classList.remove('visible');
+      pendingConfirmId = null;
+    }
+
+    micBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); }, { passive: false });
+    micBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(); });
+    micBtn.addEventListener('touchcancel', () => stopRecording());
+    micBtn.addEventListener('mousedown', (e) => { e.preventDefault(); startRecording(); });
+    micBtn.addEventListener('mouseup', () => stopRecording());
+    micBtn.addEventListener('mouseleave', () => { if (recording) stopRecording(); });
+
+    document.getElementById('always-listen').addEventListener('click', toggleAlwaysListen);
+    document.getElementById('keyboard-toggle').addEventListener('click', () => {
+      const show = textRow.style.display === 'none';
+      textRow.style.display = show ? 'flex' : 'none';
+      if (show) textInput.focus();
+    });
+    document.getElementById('send-btn').addEventListener('click', () => {
+      sendCommand(textInput.value);
+      textInput.value = '';
+    });
+    textInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        sendCommand(textInput.value);
+        textInput.value = '';
+      }
+    });
+    document.getElementById('confirm-approve').addEventListener('click', () => sendConfirm(true));
+    document.getElementById('confirm-deny').addEventListener('click', () => sendConfirm(false));
+    document.getElementById('install-dismiss').addEventListener('click', () => {
+      installBanner.classList.remove('visible');
+      localStorage.setItem('jarvis_install_hint', '1');
+    });
+    micEnableBtn.addEventListener('click', () => { requestMicPermission(); });
+    micSkipBtn.addEventListener('click', () => {
+      micPromptDismissed = true;
+      localStorage.setItem('jarvis_mic_skip', '1');
+      hideMicPermission();
+      textRow.style.display = 'flex';
+      setStatus('idle', 'Text mode — tap keyboard to type commands');
+    });
+
+    if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent) && !window.matchMedia('(display-mode: standalone)').matches) {
+      if (!localStorage.getItem('jarvis_install_hint')) installBanner.classList.add('visible');
+    }
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+
+    setupWebSpeech();
+    initSpeech();
+
+    (function checkPhoneHost() {
+      const mobileUa = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      const badHost = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+      if (!mobileUa || !badHost) {
+        connect();
+        return;
+      }
+      document.getElementById('host-warning').classList.add('visible');
+      fetch('/api/connect')
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.ok && data.mobile_url) {
+            document.getElementById('fix-url').textContent = data.mobile_url;
+          }
+        })
+        .catch(() => {});
+    })();
+  </script>
+</body>
+</html>

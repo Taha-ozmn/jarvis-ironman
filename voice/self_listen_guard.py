@@ -30,10 +30,12 @@ class SelfListenGuard:
         *,
         enabled: bool = True,
         cooldown_ms: int = 220,
+        block_while_processing: bool = True,
     ) -> None:
         self.speaker = speaker
         self.enabled = bool(enabled)
         self.cooldown_ms = max(0, int(cooldown_ms))
+        self.block_while_processing = bool(block_while_processing)
         self._lock = threading.RLock()
         self._processing = False
         self._cooldown_until = 0.0
@@ -68,7 +70,7 @@ class SelfListenGuard:
         if not self.enabled:
             return False
         with self._lock:
-            if self._processing:
+            if self.block_while_processing and self._processing:
                 return True
             if time.monotonic() < self._cooldown_until:
                 return True

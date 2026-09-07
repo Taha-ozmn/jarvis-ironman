@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.event_bus import EventBus
+from core.evidence import Evidence, make_evidence
 from core.planner import Plan, PlanStep
 from core.verification import should_verify, verify_tool_result
 from security.audit import AuditLog
@@ -61,6 +62,7 @@ class ExecutionEngine:
         working_dir: Optional[Callable[[], Path]] = None,
         tasks: Any = None,
         dry_run: bool = False,
+        workspace_only: bool = False,
     ) -> None:
         self.registry = registry
         self.permissions = permissions
@@ -74,11 +76,35 @@ class ExecutionEngine:
         self.working_dir = working_dir
         self.tasks = tasks
         self.dry_run = dry_run
+        self.workspace_only = bool(workspace_only)
         self._plan_lock = threading.Lock()
         self._paused_plan: Optional[tuple[Plan, int]] = None
+        self._on_checkpoint: Optional[Callable[[Plan, int, str], None]] = None
+        self.last_evidence: Optional[Evidence] = None
+        self.plan_evidence: list[Evidence] = []
+
+    def set_checkpoint_handler(
+        self,
+        handler: Optional[Callable[[Plan, int, str], None]],
+    ) -> None:
+        self._on_checkpoint = handler
+
+    def _persist_checkpoint(self, plan: Plan, resume_from: int, reason: str) -> None:
+        if self._on_checkpoint is None or resume_from is None:
+            return
+        try:
+            self._on_checkpoint(plan, int(resume_from), reason or "")
+        except Exception:
+            logger.exception("checkpoint handler failed")
 
     def execute(self, request: ExecutionRequest) -> ToolResult:
+        started = time.monotonic()
         result = self._execute_once(request)
+        self.last_evidence = make_evidence(
+            request.tool_name,
+            result,
+            started_at=started,
+        )
         if not result.ok:
             return result
         if not should_verify(request.tool_name, step_verify=False):
@@ -96,7 +122,21 @@ class ExecutionEngine:
             details={"message": outcome.message, "alternate": outcome.alternate},
         )
         if outcome.ok:
+            self.last_evidence = make_evidence(
+                request.tool_name,
+                result,
+                started_at=started,
+                verified=True,
+                verification_message=outcome.message,
+            )
             return result
+        self.last_evidence = make_evidence(
+            request.tool_name,
+            ToolResult(ok=False, error=outcome.message),
+            started_at=started,
+            verified=False,
+            verification_message=outcome.message,
+        )
         return ToolResult(
             ok=False,
             error=f"Verification failed: {outcome.message}. {outcome.alternate}",
@@ -136,6 +176,7 @@ class ExecutionEngine:
 
         results: list[dict[str, Any]] = []
         speeches: list[str] = []
+        self.plan_evidence = []
         start = max(0, int(start_at))
         # Agent loop guards: max steps (iterations) + wall-clock timeout
         steps = plan.steps
@@ -179,6 +220,7 @@ class ExecutionEngine:
                         "timeout_sec": self.plan_timeout_sec,
                     },
                 )
+                self._persist_checkpoint(plan, idx, "plan_timeout")
                 return PlanRunResult(
                     ok=False,
                     plan_id=plan.plan_id,
@@ -192,6 +234,7 @@ class ExecutionEngine:
 
             step = plan.steps[idx]
             outcome = self._run_step_with_retries(step, requested_by=requested_by)
+            evidence = self.plan_evidence[-1] if self.plan_evidence else None
             results.append(
                 {
                     "index": idx,
@@ -199,6 +242,7 @@ class ExecutionEngine:
                     "ok": outcome.ok,
                     "data": outcome.data if isinstance(outcome.data, str) else None,
                     "error": outcome.error,
+                    "evidence": evidence.as_dict() if evidence else None,
                 }
             )
             if outcome.ok and isinstance(outcome.data, str) and outcome.data.strip():
@@ -215,6 +259,7 @@ class ExecutionEngine:
                     {"plan_id": plan.plan_id, "step": idx, "reason": "confirmation"},
                     source="execution_engine",
                 )
+                self._persist_checkpoint(plan, idx, "confirmation_required")
                 return PlanRunResult(
                     ok=False,
                     plan_id=plan.plan_id,
@@ -237,6 +282,7 @@ class ExecutionEngine:
                     {"plan_id": plan.plan_id, "step": idx, "error": outcome.error},
                     source="execution_engine",
                 )
+                self._persist_checkpoint(plan, idx, outcome.error or "step_failed")
                 return PlanRunResult(
                     ok=False,
                     plan_id=plan.plan_id,
@@ -252,6 +298,7 @@ class ExecutionEngine:
         with self._plan_lock:
             if self._paused_plan and self._paused_plan[0].plan_id == plan.plan_id:
                 self._paused_plan = None
+        self._persist_checkpoint(plan, len(plan.steps), "__completed__")
         speech = self._compose_speech(speeches, stopped="Plan complete.")
         self.bus.publish(
             "plan.completed",
@@ -310,6 +357,7 @@ class ExecutionEngine:
         """Execute a plan step with retry mechanism and exponential backoff."""
         import time
 
+        started = time.monotonic()
         max_attempts = self.max_retries + 1
         base_delay = 0.5  # Start with 500ms delay
 
@@ -380,15 +428,24 @@ class ExecutionEngine:
                 success=outcome.ok,
                 details={"message": outcome.message, "alternate": outcome.alternate},
             )
-            if outcome.ok:
-                return last_result
-            else:
-                # Verification failed, treat as overall failure
-                return ToolResult(
+            if not outcome.ok:
+                # Verification failed, treat as overall failure.
+                last_result = ToolResult(
                     ok=False,
                     error=f"Verification failed: {outcome.message}. {outcome.alternate}",
                 )
 
+        self.plan_evidence.append(
+            make_evidence(
+                step.tool_name,
+                last_result,
+                started_at=started,
+                verified=bool(last_result.ok),
+                verification_message="plan step completed" if last_result.ok else (
+                    last_result.error or ""
+                ),
+            )
+        )
         return last_result
 
     def _is_retryable_error(self, error_message: Optional[str]) -> bool:
@@ -441,6 +498,23 @@ class ExecutionEngine:
             result = ToolResult(ok=False, error=f"Unknown tool: {request.tool_name}")
             self._audit_failure(request, result.error or "")
             return result
+
+        if self.workspace_only and request.tool_name.startswith("fs."):
+            workspace = self.working_dir() if self.working_dir else Path.cwd()
+            for key in ("path", "src", "dst"):
+                raw = str(request.arguments.get(key) or "").strip()
+                if not raw:
+                    continue
+                candidate = Path(raw).expanduser()
+                if not candidate.is_absolute():
+                    candidate = workspace / candidate
+                try:
+                    candidate.resolve().relative_to(workspace.resolve())
+                except ValueError:
+                    msg = f"Permission denied outside active workspace: {key}"
+                    result = ToolResult(ok=False, error=msg)
+                    self._audit_failure(request, msg)
+                    return result
 
         effective = tool.permission_level
         resolve = getattr(tool, "resolve_permission", None)

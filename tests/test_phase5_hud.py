@@ -91,6 +91,8 @@ class HudDataTests(unittest.TestCase):
             self.assertGreaterEqual(snap["summary"]["active_automations"], 1)
             self.assertTrue(any(t.get("title") == "HUD task" for t in snap["tasks"]))
             self.assertTrue(snap["diagnostics"].get("ok"))
+            self.assertIn("brain", snap)
+            self.assertEqual(snap["autonomy_profile"], "safe")
             os_core.close()
 
     def test_level3_waits_for_hud_confirm(self) -> None:

@@ -16,6 +16,7 @@ from core.verification import should_verify, verify_tool_result
 from security.audit import AuditLog
 from security.confirmation import ConfirmationGate
 from security.permissions import PermissionGate, PermissionLevel
+from system.macos import MacOSController
 from tools.base import ToolResult
 from tools.media_tools import MediaPlayTool
 from tools.registry import ToolRegistry
@@ -88,6 +89,22 @@ class MusicRouterTests(unittest.TestCase):
         self.assertIsNotNone(match)
         assert match is not None
         self.assertEqual(match.request.tool_name, "media.play")
+
+
+class MediaFalsePositiveTests(unittest.TestCase):
+    def test_turkish_question_does_not_open_spotify(self) -> None:
+        controller = MacOSController()
+        result = controller.try_media(
+            "Iron Man filmindeki gibi hologram ile çalışabilir miyiz?"
+        )
+        self.assertIsNone(result)
+
+    def test_long_hologram_question_does_not_open_spotify(self) -> None:
+        controller = MacOSController()
+        result = controller.try_media(
+            "Iron Man filmindeki gibi hologram ile ışık efekti yapabilir miyiz?"
+        )
+        self.assertIsNone(result)
 
 
 class ScreenRouterTests(unittest.TestCase):

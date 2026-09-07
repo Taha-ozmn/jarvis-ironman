@@ -20,6 +20,7 @@ jarvis:
   ask_on_timeout: false
   auto_continue: true
   auto_retry_count: 1
+  max_progress_updates: 3
   auto_review: false
   background_on_timeout: true
   boot_delay: 0.04
@@ -27,31 +28,33 @@ jarvis:
   conversation_turns: 40
   conversational_second_brain: true
   deep_timeout: 900
+  brain_start_timeout_sec: 15
   fast_boot: true
   fast_mode: true
   formal_address: false
   full_access: true
   hard_timeout_sec: 0
   language: en-GB
-  llm_provider: nvidia
+  llm_provider: cursor
   max_speech_chars: 420
-  model: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
+  model: composer-2.5
   model_routing: true
   models:
-    action: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
-    chat: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
-    code: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
-    complex: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
-    deep: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
-    default: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
-    search: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
-    system: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
+    action: composer-2.5
+    chat: composer-2.5
+    code: composer-2.5
+    complex: composer-2.5
+    deep: composer-2.5
+    default: composer-2.5
+    search: composer-2.5
+    system: composer-2.5
   name: J.A.R.V.I.S.
   narrate: true
+  phone_tts: true
   persona: iron_man
   persona_refresh_interval: 5
   preload_brain: true
-  progress_interval_sec: 5
+  progress_interval_sec: 30
   reply_language: en
   sandbox: false
   setting_sources: []
@@ -60,19 +63,20 @@ jarvis:
   speak_ack: true
   speak_language: en
   stream_preview: false
-  think_timeout: 5
+  think_timeout: 90
   turkish_only: false
   understand: tr+en
   # Listen in Turkish (STT); reply/speak stay English via reply_language/speak_language
-  user_name: ne
+  user_name: Taha
   voice: en-GB-RyanNeural
   wake_words:
   - jarvis
   - hey jarvis
   - ok jarvis
   work_updates: true
-  workspace: /Users/mac/Desktop/Projeler/projelerim-github/jarvis-ironman
+  workspace: /Users/mac/Desktop/jarvis-ironman-main
 jarvis2:
+  autonomy_profile: full
   auto_approve_dangerous: true
   auto_approve_level_0_1_2: true
   automation: true
@@ -80,6 +84,7 @@ jarvis2:
   automation_tick_seconds: 30
   backup_retention: 10
   confirm_timeout: 60
+  checkpoint_path: data/plan_checkpoint.json
   db_path: data/jarvis.db
   deep_max_iterations: 8
   enabled: true
@@ -87,14 +92,16 @@ jarvis2:
   file_watch_enabled: true
   full_autonomy: true
   max_permission_level: 3
+  workspace_only: false
   max_plan_steps: 12
   mcp:
     enabled: true
     servers: []
   memory_recall_limit: 3
   memory_recall_max_chars: 300
-  plan_max_retries: 1
+  plan_max_retries: 3
   plan_timeout_sec: 300
+  thinking_trace: true
   proactive:
     daily_briefing_hour: 9
     daily_briefing_minute: 0
@@ -154,20 +161,33 @@ system:
   full_shell_access: true
 ui:
   always_listen: true
+  command_queue_maxsize: 8
   command_center_interval: 15
   enabled: true
+  host: lan
+  pairing_state_path: data/ui_pairing.json
   min_command_length: 4
   min_confidence: 0.5
   mode: browser
-  pause_while_busy: true
+  pause_while_busy: false
   port: 8765
+  tls: true
+  tls_port: 8766
   require_wake_word: false
   telemetry_interval: 15
   utterance_debounce_ms: 1400
   window_height: 820
   window_width: 1280
+voice_identity:
+  enabled: false
+  require_profile: false
+  profile_path: data/voice_profile.json
+  enrollment_samples: 4
+  threshold: 0.88
+  min_voiced_frames: 8
+
 voice:
-  ambient_calibration_seconds: 0.8
+  ambient_calibration_seconds: 0.4
   cinematic: true
   edge_retries: 2
   edge_timeout: 25
@@ -175,18 +195,24 @@ voice:
   engine: jarvis
   english_voice: en-GB-RyanNeural
   listen_language: tr-TR
-  listen_timeout: 8
-  native_first: false
+  listen_languages:
+  - tr-TR
+  - en-US
+  listen_timeout: 12
+  native_idle_timeout_sec: 0.8
+  native_silence_timeout_sec: 0.9
+  native_first: true
+  always_speak: true
   native_rate: 165
   native_voice: Daniel
-  pause_threshold: 1.2
+  pause_threshold: 0.9
   phrase_gap_sec: 0.04
-  phrase_limit: 12
+  phrase_limit: 15
   pitch: -2Hz
   post_tts_cooldown_ms: 280
   rate: +5%
   self_listen_guard: true
-  speech_rate: +5%
+  speech_rate: -10%
   ssml: true
   turkish_voice: tr-TR-EmelNeural
   volume: +0%

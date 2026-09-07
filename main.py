@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import queue
 import subprocess
@@ -36,6 +37,7 @@ from voice.listener import VoiceListener
 from voice.narrator import JarvisNarrator
 from voice.self_listen_guard import SelfListenGuard
 from voice.speaker import VoiceSpeaker
+from security.speaker_verification import SpeakerProfileError, SpeakerVerifier
 from core.structured_logger import (
     log_user_input,
     log_intent_detected,
@@ -54,6 +56,7 @@ from core.request_context import set_request_id, clear_request_id
 load_dotenv(ROOT / ".env")
 
 BRITISH_VOICES = ("Daniel", "Reed", "Rocko")
+logger = logging.getLogger(__name__)
 
 
 def load_config() -> dict:
@@ -75,7 +78,9 @@ class JarvisCore:
     def __init__(self, config: dict) -> None:
         self.config = config
         j = config["jarvis"]
+        j2 = config.get("jarvis2", {})
         v = config["voice"]
+        safe_profile = str(j2.get("autonomy_profile", "safe")).lower() == "safe"
 
         llm_provider = str(j.get("llm_provider", "cursor")).lower()
         if llm_provider == "nvidia":
@@ -84,17 +89,15 @@ class JarvisCore:
                 or os.environ.get("CURSOR_API_KEY", "")
             )
             if not api_key or api_key.startswith("cursor_your"):
-                print("\n⚠️  NVIDIA_API_KEY (or CURSOR_API_KEY) required for NVIDIA provider!")
-                print("   1. Set NVIDIA_API_KEY in .env")
-                print("   2. cp .env.example .env && nano .env\n")
-                sys.exit(1)
+                print(
+                    "\n⚠️  NVIDIA API key missing — starting in tools-only degraded mode."
+                )
         else:
             api_key = os.environ.get("CURSOR_API_KEY", "")
             if not api_key or api_key.startswith("cursor_your"):
-                print("\n⚠️  CURSOR_API_KEY gerekli!")
-                print("   1. https://cursor.com/dashboard/integrations adresinden API key alın")
-                print("   2. cp .env.example .env && nano .env\n")
-                sys.exit(1)
+                print(
+                    "\n⚠️  CURSOR_API_KEY missing — starting in tools-only degraded mode."
+                )
 
         self.speaker = VoiceSpeaker(
             voice=os.environ.get("JARVIS_VOICE", j.get("voice", "en-GB-RyanNeural")),
@@ -113,6 +116,25 @@ class JarvisCore:
             self.speaker,
             enabled=bool(v.get("self_listen_guard", True)),
             cooldown_ms=int(v.get("post_tts_cooldown_ms", 220)),
+            block_while_processing=not bool(
+                config.get("ui", {}).get("always_listen", True)
+            ),
+        )
+        identity_cfg = config.get("voice_identity", {})
+        identity_enabled = bool(identity_cfg.get("enabled", False))
+        profile_value = str(identity_cfg.get("profile_path", "data/voice_profile.json"))
+        profile_path = Path(profile_value).expanduser()
+        if not profile_path.is_absolute():
+            profile_path = ROOT / profile_path
+        self.speaker_verifier = (
+            SpeakerVerifier(
+                profile_path,
+                threshold=identity_cfg.get("threshold", 0.88),
+                min_voiced_frames=identity_cfg.get("min_voiced_frames", 8),
+                require_profile=identity_cfg.get("require_profile", True),
+            )
+            if identity_enabled
+            else None
         )
         listen_lang = (
             os.environ.get("JARVIS_LISTEN_LANGUAGE")
@@ -121,13 +143,22 @@ class JarvisCore:
         )
         self.listener = VoiceListener(
             language=listen_lang,
+            recognition_languages=v.get(
+                "listen_languages",
+                (listen_lang, "en-US"),
+            ),
             energy_threshold=v.get("energy_threshold", 300),
-            pause_threshold=v.get("pause_threshold", 0.8),
-            phrase_limit=v.get("phrase_limit", 12),
-            listen_timeout=v.get("listen_timeout", 8),
+            pause_threshold=v.get("pause_threshold", 1.4),
+            phrase_limit=v.get("phrase_limit", 15),
+            listen_timeout=v.get("listen_timeout", 15),
+            native_idle_timeout=v.get("native_idle_timeout_sec", 1.5),
+            native_silence_timeout=v.get("native_silence_timeout_sec", 1.4),
             ambient_seconds=v.get("ambient_calibration_seconds", 1.5),
             on_wake=self._on_wake,
             on_partial=self._on_heard,
+            on_recognizing=self._on_recognizing,
+            speaker_verifier=self.speaker_verifier,
+            on_voice_rejected=self._on_voice_rejected,
         )
         sys_cfg = config.get("system", {})
         self.system = MacOSController(
@@ -140,8 +171,8 @@ class JarvisCore:
             user_name=os.environ.get("JARVIS_USER_NAME", j.get("user_name", "sir")),
             formal_address=j.get("formal_address", True),
             language=os.environ.get("JARVIS_LANGUAGE", j.get("language", "en-GB")),
-            full_access=j.get("full_access", True),
-            sandbox=j.get("sandbox", False),
+            full_access=bool(j.get("full_access", True)) and not safe_profile,
+            sandbox=bool(j.get("sandbox", False)) or safe_profile,
             auto_review=j.get("auto_review", False),
             setting_sources=j.get("setting_sources", "all"),
             skip_model_list=j.get("skip_model_list", True),
@@ -149,9 +180,17 @@ class JarvisCore:
             think_timeout=j.get("think_timeout", 90.0),
             complex_timeout=j.get("complex_timeout", 600.0),
             deep_timeout=j.get("deep_timeout", 1200.0),
+            start_timeout_sec=j.get("brain_start_timeout_sec", 15.0),
+            soft_timeout_sec=j.get("soft_timeout_sec", 5.0),
+            hard_timeout_sec=j.get("hard_timeout_sec", 0.0),
             background_on_timeout=j.get("background_on_timeout", True),
+            ask_on_timeout=j.get("ask_on_timeout", False),
+            auto_retry_count=j.get("auto_retry_count", 0),
+            progress_interval_sec=j.get("progress_interval_sec", 5.0),
+            latency_stats_path=ROOT / "data" / "latency_stats.json",
             narrate=j.get("narrate", True),
             work_updates=j.get("work_updates", True),
+            max_progress_updates=j.get("max_progress_updates", 3),
             persona=j.get("persona", "iron_man"),
             conversation_turns=j.get("conversation_turns", 6),
             persona_refresh_interval=j.get("persona_refresh_interval", 5),
@@ -168,19 +207,32 @@ class JarvisCore:
         self.brain.address = self.brain.user_name or "sir"
         self.brain.fast_mode = j.get("fast_mode", True)
         self.brain.max_speech_chars = j.get("max_speech_chars", 280)
+        from config.loader import load_personality
+        from core.persona_engine import apply_personality_to_brain
+
+        personality = load_personality()
+        apply_personality_to_brain(self.brain, personality)
+        if hasattr(self.brain, "refresh_timeout_voice"):
+            self.brain.refresh_timeout_voice()
         self.speak_ack = j.get("speak_ack", False)
         self.preload_brain = j.get("preload_brain", True)
         self.ai_only = j.get("ai_only", True)
-        self.narrator = JarvisNarrator()
+        display_name = str(personality.get("display_name") or j.get("user_name", "Taha"))
+        self.narrator = JarvisNarrator(user_name=display_name)
         self.ui = None
         self.os_v2 = None  # JARVIS 2.0 core (optional soft-init)
         self._status = "idle"
-        self._command_queue: queue.Queue[str] = queue.Queue()
+        queue_size = max(
+            1,
+            int(config.get("ui", {}).get("command_queue_maxsize", 8)),
+        )
+        self._command_queue: queue.Queue[str] = queue.Queue(maxsize=queue_size)
         self._processing = threading.Lock()
         self._current_request_id: Optional[str] = None
         self._boot_greeting_sent = False
         self._listening_enabled = True
         self._speaking_busy = False
+        self._tts_gate_epoch = 0
 
         j2 = config.get("jarvis2", {})
         if j2.get("enabled", True) and j2.get("soft_init", True):
@@ -235,32 +287,39 @@ class JarvisCore:
             return self.set_mic_listening(True, announce=False)
         return None
 
-    def try_stop_speech(self, command: str) -> Optional[str]:
-        """Interrupt TTS without shutting down JARVIS ('Jarvis dur', 'be quiet')."""
+    def _should_accept_voice_command(self, command: str) -> bool:
+        """Keep stop/listen controls available during TTS or task execution."""
+        from system.listen_control import classify_listen_command
+
+        if classify_listen_command(command) is not None:
+            return True
+        if self._is_stop_speech_phrase(command):
+            return True
+        return self.listen_guard.should_accept_transcript(command)
+
+    def _is_stop_speech_phrase(self, command: str) -> bool:
         lower = (command or "").lower().strip()
-        # Strip wake prefixes
         for prefix in ("hey jarvis ", "ok jarvis ", "jarvis "):
             if lower.startswith(prefix):
                 lower = lower[len(prefix):].strip()
-        stop_phrases = (
-            "dur",
-            "stop",
-            "stop talking",
-            "stop speaking",
-            "be quiet",
-            "shut up",
-            "sus",
-            "kes",
-            "sessiz ol",
-            "konuşmayı kes",
-            "konusmayi kes",
-            "enough",
+        phrases = (
+            "dur", "stop", "stop talking", "stop speaking", "be quiet",
+            "shut up", "sus", "kes", "sessiz ol", "konuşmayı kes",
+            "konusmayi kes", "enough",
         )
-        if lower in stop_phrases or any(
-            lower == p or lower.startswith(p + " ") for p in stop_phrases if len(p) > 2
-        ):
+        return lower in phrases or any(
+            lower.startswith(p + " ") for p in phrases if len(p) > 2
+        )
+
+    def try_stop_speech(self, command: str) -> Optional[str]:
+        """Interrupt TTS without shutting down JARVIS ('Jarvis dur', 'be quiet')."""
+        if self._is_stop_speech_phrase(command):
             try:
                 self.speaker.flush()
+            except Exception:
+                pass
+            try:
+                self.brain._interrupt_inflight()
             except Exception:
                 pass
             return "Standing by."
@@ -271,11 +330,49 @@ class JarvisCore:
             return
         self.set_mic_listening(enabled, announce=not silent)
 
+    def _continuous_listening_enabled(self) -> bool:
+        return bool(self.config.get("ui", {}).get("always_listen", True))
+
+    def _enqueue_command(self, command: str, source: str = "voice") -> bool:
+        """Queue a command without silently losing it when the worker is busy."""
+        text = (command or "").strip()
+        if not text:
+            return False
+        try:
+            self._command_queue.put_nowait(text)
+            return True
+        except queue.Full:
+            detail = "Command queue full — waiting commands were preserved."
+            print(f"⚠️  {detail} Source: {source}")
+            self._set_status("listening", detail)
+            if self.ui:
+                self.ui.broadcast(
+                    "status",
+                    detail,
+                    queue_full=True,
+                    source=source,
+                )
+            return False
+
     def _start_brain_async(self) -> None:
         try:
-            self.brain.start()
+            # Bound startup so a stalled Cursor bridge cannot block the
+            # supervisor forever. Local tools, memory, and the HUD remain live
+            # while the watchdog retries the neural core.
+            self.brain.ensure_started(timeout=self.brain.start_timeout_sec)
             if self.ui:
-                self.ui.send_telemetry(get_telemetry(self.brain.model))
+                self.ui.send_telemetry(
+                    get_telemetry(
+                        self.config.get("jarvis", {}),
+                        brain_model=self.brain.model,
+                        brain_ready=self.brain.is_ready(),
+                    )
+                )
+            if not self.brain.is_ready():
+                print(
+                    f"⚠️  Neural core unavailable: "
+                    f"{self.brain.start_error or 'startup timeout'}"
+                )
         except Exception as err:
             err_text = str(err)
             print(f"⚠️  Neural core: {err_text}")
@@ -306,6 +403,18 @@ class JarvisCore:
             f"{self.narrator.time_greeting(lang)} "
             "JARVIS online — all systems nominal. At your service."
         )
+        if self.speaker_verifier is not None and not self.speaker_verifier.enrolled:
+            greeting = (
+                "Voice identity is not enrolled. Run "
+                "python main.py --enroll-voice before issuing commands."
+            )
+        if self.os_v2 is not None:
+            try:
+                tip = self.os_v2.proactive_suggestion()
+                if tip and len(tip) > 20:
+                    greeting = f"{greeting} {tip}"
+            except Exception:
+                pass
         self._set_status("speaking", greeting)
         self._jarvis_speak(greeting)
         self._set_status("idle", "Standing by — speak your command")
@@ -323,8 +432,84 @@ class JarvisCore:
         self._set_status("listening", text)
         print(f"   Heard: {text}")
 
+    def _on_recognizing(self) -> None:
+        """Signal transcription is in flight without leaving the listening state.
+
+        Using the calm "listening" state (not "thinking") keeps the reactor
+        green and avoids a stuck-looking amber PROCESSING flash on the frequent
+        ambient captures that Google returns with no transcript.
+        """
+        if self._listening_enabled:
+            self._set_status("listening", "Recognizing…")
+
+    def _on_voice_rejected(self, reason: str) -> None:
+        """Report a rejected speaker without exposing biometric details."""
+        del reason
+        self._set_status("listening", "Voice not recognized")
+
+    def enroll_voice_profile(self) -> bool:
+        """Guide the owner through local voice-profile enrollment."""
+        if self.speaker_verifier is None:
+            self.speaker.speak_sync(
+                "Voice identity is disabled in configuration.",
+                timeout=15.0,
+            )
+            return False
+
+        identity_cfg = self.config.get("voice_identity", {})
+        target = max(3, min(5, int(identity_cfg.get("enrollment_samples", 4))))
+        samples: list[bytes] = []
+        prompts = (
+            "Please say: Jarvis, open my workspace.",
+            "Please say: Jarvis, what is the system status?",
+            "Please say: Jarvis, remember this task.",
+            "Please say: Jarvis, inspect the screen.",
+            "Please say: Jarvis, continue listening.",
+        )
+        self.speaker.speak_sync(
+            f"Voice enrollment started. I need {target} short recordings.",
+            timeout=20.0,
+        )
+        for index in range(target):
+            attempts = 0
+            while attempts < 2 and len(samples) <= index:
+                self.speaker.speak_sync(prompts[index], timeout=15.0)
+                self.speaker.wait_until_idle(timeout=20.0)
+                self._set_status("listening", f"Enrollment sample {index + 1} of {target}")
+                recording = self.listener.capture_audio()
+                attempts += 1
+                if recording:
+                    samples.append(recording)
+                    break
+                self.speaker.speak_sync(
+                    "I did not receive a clear recording. Please repeat that sentence.",
+                    timeout=15.0,
+                )
+
+        if len(samples) != target:
+            self.speaker.speak_sync(
+                "Voice enrollment failed. No voice profile was changed.",
+                timeout=15.0,
+            )
+            return False
+        try:
+            self.speaker_verifier.enroll(samples)
+        except SpeakerProfileError:
+            self.speaker.speak_sync(
+                "Voice enrollment failed. Please record the samples in a quieter room.",
+                timeout=15.0,
+            )
+            return False
+        self.speaker.speak_sync(
+            "Voice profile saved locally. I will now accept commands only from your voice.",
+            timeout=20.0,
+        )
+        return True
+
     def _on_thinking(self, text: str) -> None:
         self._set_status("thinking", text)
+        if self.ui:
+            self.ui.broadcast("thinking", text, thinking_trace=text)
         print(f"🧠 Processing: {text}")
 
     def _jarvis_speak(self, text: str) -> None:
@@ -337,6 +522,10 @@ class JarvisCore:
     def _on_speaker_busy_change(self, busy: bool) -> None:
         """Callback for when speaker starts/stops speaking."""
         self._speaking_busy = busy
+        if busy:
+            # Any native capture overlapping TTS may contain JARVIS's own voice.
+            # Invalidate that capture even if it returns after playback ends.
+            self._tts_gate_epoch += 1
         self.listen_guard.refresh()
 
     def _resume_listening_after_speech(self) -> None:
@@ -347,7 +536,8 @@ class JarvisCore:
             pass
         if self.ui:
             try:
-                self.ui.flush_pending_commands()
+                if not self._continuous_listening_enabled():
+                    self.ui.flush_pending_commands()
             except Exception:
                 pass
             try:
@@ -501,15 +691,6 @@ class JarvisCore:
         ):
             self._schedule_restart()
             return "Done — I've upgraded my speed settings and I'm restarting now."
-
-        if (
-            any(p in lower for p in ("ekran", "screen", "görüntü"))
-            and any(p in lower for p in ("gör", "see", "görebilir", "look"))
-        ):
-            return (
-                "I cannot see your screen yet. "
-                "I can open apps, run shell commands, and search the web for you."
-            )
 
         if any(
             p in lower
@@ -821,7 +1002,12 @@ class JarvisCore:
     def _try_jarvis2_tools(self, command: str) -> Optional[str]:
         if self.os_v2 is None:
             return self._try_jarvis2_diagnostics(command)
-        return self.os_v2.try_handle_command(command)
+        turn = self.os_v2.handle_turn(command)
+        if turn.handled:
+            return turn.speech
+        if turn.brain_needed:
+            return None
+        return turn.speech
 
     def _try_jarvis2_diagnostics(self, command: str) -> Optional[str]:
         """Fallback when core is disabled — only status phrases."""
@@ -842,12 +1028,16 @@ class JarvisCore:
             print(f"⏳ Still processing, skipped: {command}")
             return
 
+        j = self.config.get("jarvis", {})
+        v = self.config.get("voice", {})
         print(f"📢 Command: {command}")
         response = ""
         self.speaker.flush()
         self.listen_guard.set_processing(True)
         if self.ui:
-            self.ui.send_listen_gate(True)
+            self.ui.send_listen_gate(
+                not self._continuous_listening_enabled()
+            )
         self._set_status("thinking", command)
         if self.ui:
             self.ui.broadcast("thinking", command)
@@ -873,22 +1063,32 @@ class JarvisCore:
                         self._set_status("thinking", "Processing…")
                     if not self.brain.is_ready():
                         self._set_status("thinking", "Neural core connecting…")
-                        self.brain.wait_ready(timeout=120)
+                        self.brain.wait_ready(
+                            timeout=float(j.get("brain_start_timeout_sec", 15.0))
+                        )
                     response = self.brain.think_with_narration(
                         command,
                         self._jarvis_speak,
-                        work_update=self.narrator.work_update,
+                        work_update=lambda idx: self.narrator.work_update(
+                            idx, command=command,
+                        ),
                         on_complete=lambda result: self._on_task_complete(
                             command, result,
                         ),
                     )
-                    if response and response not in (
-                        "That took longer than expected — shall I keep trying, sir?",
-                    ):
+                    if response and not self._is_timeout_placeholder(response):
                         self.brain.remember_turn(command, response)
                         if self.os_v2 is not None:
                             self.os_v2.ingest_conversation(command, response)
                     self._emit_response(command, response)
+                    if (
+                        response
+                        and not self._is_timeout_placeholder(response)
+                        and j.get("narrate", True)
+                        and v.get("always_speak", True)
+                    ):
+                        # Safety net: brain may have spoken during think; dedupe skips repeats.
+                        self._jarvis_speak(response)
                 elif response == "SHUTDOWN_JARVIS":
                     self.speaker.say("Powering down.")
                     print("🤖 JARVIS: Powering down.\n")
@@ -901,16 +1101,25 @@ class JarvisCore:
         except Exception as err:
             # Never expose raw locale/thread internals to the user (English only).
             err_text = str(err)
-            print(f"⚠️  {err_text}")
+            logger.exception("Command handling failed: %s", type(err).__name__)
+            print(f"⚠️  Command handling failed: {type(err).__name__}: {err_text}")
             if "signal" in err_text.lower() and "main" in err_text.lower():
                 response = (
                     "My apologies — a threading fault interrupted that action. "
                     "Please try the command again."
                 )
+            elif any(
+                marker in err_text.lower()
+                for marker in ("network", "connection", "cursor", "agent")
+            ):
+                response = (
+                    "I couldn't reach the reasoning core for that request. "
+                    "Local commands remain available."
+                )
             else:
                 response = (
-                    "My apologies — something went wrong while handling that. "
-                    "Please try again."
+                    "I couldn't complete that request because an internal "
+                    "component failed. Local commands remain available."
                 )
             self._set_status("error", "fault")
             self._emit_response(command, response)
@@ -929,6 +1138,24 @@ class JarvisCore:
         # Resume mic only after real TTS finishes (fixes one-shot listen)
         self._resume_listening_after_speech()
         self._set_status("idle", "Standing by — speak your command")
+
+    def _is_timeout_placeholder(self, response: str) -> bool:
+        """True when the reply is only a wait/fail placeholder, not a real answer."""
+        if not response:
+            return True
+        lower = response.lower()
+        markers = (
+            "shall i keep trying",
+            "say 'continue'",
+            "timed out",
+            "ran out of time",
+            "exceeded my wait window",
+            "took too long",
+            "still working until it's complete",
+            "finish in the background",
+            "report back when finished",
+        )
+        return any(m in lower for m in markers)
 
     def _emit_response(self, command: str, response: str) -> None:
         if self.ui:
@@ -959,11 +1186,45 @@ class JarvisCore:
                 print(f"⚠️  Hata: {err}")
                 self._set_status("error", str(err))
 
+    def _ui_command_bridge(self) -> None:
+        """Consume HUD commands when the native microphone loop is active."""
+        if self.ui is None:
+            return
+        while True:
+            try:
+                command = self.ui.wait_for_command(timeout=0.3)
+                if not command:
+                    continue
+                if self._intercept_confirmation_outside_worker(command):
+                    continue
+                if self.try_stop_speech(command) is not None:
+                    print("🔇 Speech interrupted from HUD")
+                    continue
+                control = self.try_listen_control(command)
+                if control:
+                    self._emit_response(command, control)
+                    self.speaker.say(control)
+                    continue
+                if self._should_accept_voice_command(command):
+                    self._enqueue_command(command, source="hud")
+            except KeyboardInterrupt:
+                return
+            except Exception as err:
+                print(f"⚠️  HUD command bridge: {err}")
+                time.sleep(0.5)
+
     def _native_listen_command(self) -> Optional[str]:
+        capture_epoch = self._tts_gate_epoch
+        if self.listen_guard.blocked:
+            time.sleep(0.05)
+            return None
         require_wake = self.config.get("ui", {}).get("require_wake_word", False)
         if require_wake:
-            return self.listener.listen_for_wake_and_command()
+            command = self.listener.listen_for_wake_and_command()
+            return command if capture_epoch == self._tts_gate_epoch else None
         text = self.listener.listen_once()
+        if capture_epoch != self._tts_gate_epoch:
+            return None
         if not text:
             return None
         self._on_heard(text)
@@ -1024,6 +1285,10 @@ class JarvisCore:
                 mic_failures = 0
 
                 if not self._listening_enabled:
+                    # Do not treat JARVIS's own mute confirmation as a real
+                    # "resume" command while TTS is still playing.
+                    if not self.listen_guard.should_accept_transcript(command):
+                        continue
                     control = self.try_listen_control(command)
                     if control:
                         self._emit_response(command, control)
@@ -1039,11 +1304,17 @@ class JarvisCore:
                     print("🔇 Speech interrupted")
                     continue
 
-                if not self.listen_guard.should_accept_transcript(command):
+                control = self.try_listen_control(command)
+                if control:
+                    self._emit_response(command, control)
+                    self.speaker.say(control)
+                    continue
+
+                if not self._should_accept_voice_command(command):
                     # Drop STT echo / commands while TTS or cooldown is active
                     continue
 
-                self._command_queue.put(command)
+                self._enqueue_command(command, source="native")
             except KeyboardInterrupt:
                 break
             except Exception as err:
@@ -1075,10 +1346,16 @@ class JarvisCore:
                         print("🔇 Speech interrupted")
                         continue
 
-                    if not self.listen_guard.should_accept_transcript(command):
+                    control = self.try_listen_control(command)
+                    if control:
+                        self._emit_response(command, control)
+                        self.speaker.say(control)
                         continue
 
-                    self._command_queue.put(command)
+                    if not self._should_accept_voice_command(command):
+                        continue
+
+                    self._enqueue_command(command, source="hud")
             except KeyboardInterrupt:
                 break
 
@@ -1097,6 +1374,10 @@ class JarvisCore:
             self._set_status("idle", "Standing by — speak your command")
 
         paused_detail = 'Mic paused — say "listen again" or press LISTEN'
+        worker = threading.Thread(target=self._command_worker, daemon=True)
+        worker.start()
+        if self.ui:
+            threading.Thread(target=self._ui_command_bridge, daemon=True).start()
 
         while True:
             try:
@@ -1104,6 +1385,10 @@ class JarvisCore:
                 if not command:
                     continue
                 if not self._listening_enabled:
+                    # Do not treat JARVIS's own mute confirmation as a real
+                    # "resume" command while TTS is still playing.
+                    if not self.listen_guard.should_accept_transcript(command):
+                        continue
                     control = self.try_listen_control(command)
                     if control:
                         self._emit_response(command, control)
@@ -1116,10 +1401,10 @@ class JarvisCore:
                     print("🔇 Speech interrupted")
                     continue
 
-                if not self.listen_guard.should_accept_transcript(command):
+                if not self._should_accept_voice_command(command):
                     continue
 
-                self._run_command(command)
+                self._enqueue_command(command, source="native")
             except KeyboardInterrupt:
                 break
             except Exception as err:
@@ -1154,8 +1439,9 @@ def start_ui_server(
     *,
     open_browser: bool = True,
     desktop_mode: bool = False,
+    native_mic: bool = False,
 ) -> None:
-    from ui.server import JarvisUI
+    from ui.server import JarvisUI, lan_ip, resolve_bind_host
 
     interval = float(ui_config.get("telemetry_interval", 5 if desktop_mode else 2))
     cc_interval = float(ui_config.get("command_center_interval", 5))
@@ -1182,9 +1468,20 @@ def start_ui_server(
         jarvis_config=core.config.get("jarvis", {}),
         open_browser=open_browser,
         desktop_mode=desktop_mode,
+        native_mic=native_mic,
+        voice_identity_enabled=core.speaker_verifier is not None,
         telemetry_interval=interval,
         command_center_interval=cc_interval,
         on_confirm=_on_confirm,
+        data_provider=_data_provider,
+        telemetry_supplier=lambda: get_telemetry(
+            core.config.get("jarvis", {}),
+            brain_model=core.brain.model,
+            brain_ready=core.brain.is_ready(),
+        ),
+        os_core=core.os_v2,
+        command_enqueue=lambda text: core._enqueue_command(text, source="rest"),
+        host=str(ui_config.get("host", "127.0.0.1")),
     )
     core.ui.on_mic_control = core._handle_mic_control
     core.ui.send_mic_state(core._listening_enabled)
@@ -1194,7 +1491,7 @@ def start_ui_server(
             core.ui.send_listen_gate(blocked)
 
     core.listen_guard.add_listener(_on_listen_gate)
-    core.ui.set_voice_accept_fn(core.listen_guard.should_accept_transcript)
+    core.ui.set_voice_accept_fn(core._should_accept_voice_command)
 
     if core.os_v2 is not None:
         def _level_notify(level: int, tool: str, args: dict) -> None:
@@ -1217,13 +1514,32 @@ def start_ui_server(
             on_confirm_pending=_confirm_pending,
         )
 
+        def _thinking_trace(payload: dict) -> None:
+            label = str(payload.get("label") or payload.get("message") or "")
+            if core.ui and label:
+                core.ui.broadcast(
+                    "thinking",
+                    label,
+                    thinking_trace=label,
+                    thinking_phase=str(payload.get("phase") or ""),
+                )
+
+        core.os_v2.set_thinking_callback(_thinking_trace)
+
     thread = threading.Thread(target=core.ui.run, daemon=True)
     thread.start()
     core.ui.wait_ready()
     if desktop_mode:
         print("🖥️  JARVIS Desktop HUD hazır")
     else:
+        bind = resolve_bind_host(str(ui_config.get("host", "127.0.0.1")))
         print(f"🖥️  HUD: http://localhost:{port}")
+        if bind == "0.0.0.0":
+            phone_ip = lan_ip()
+            if phone_ip:
+                print(f"📱  iPhone / iPad (same Wi‑Fi): http://{phone_ip}:{port}")
+                print(f"📱  Mobile app (install): http://{phone_ip}:{port}/mobile")
+                print(f"📱  QR / copy link: http://{phone_ip}:{port}/connect")
 
 
 def main() -> None:
@@ -1233,6 +1549,11 @@ def main() -> None:
     parser.add_argument("--no-ui", action="store_true", help="Disable Iron Man HUD")
     parser.add_argument("--browser", action="store_true", help="Open HUD in browser instead of desktop app")
     parser.add_argument("--ui-only", action="store_true", help="Launch HUD only")
+    parser.add_argument(
+        "--enroll-voice",
+        action="store_true",
+        help="Guided local enrollment for the trusted speaker",
+    )
     args = parser.parse_args()
 
     config = load_config()
@@ -1247,7 +1568,7 @@ def main() -> None:
     )
 
     if args.ui_only:
-        from ui.server import JarvisUI
+        from ui.server import JarvisUI, lan_ip, resolve_bind_host
 
         desktop = ui_cfg.get("mode", "desktop") == "desktop"
         ui = JarvisUI(
@@ -1257,6 +1578,7 @@ def main() -> None:
             open_browser=not desktop,
             desktop_mode=desktop,
             telemetry_interval=float(ui_cfg.get("telemetry_interval", 5)),
+            host=str(ui_cfg.get("host", "127.0.0.1")),
         )
         if desktop:
             import webview
@@ -1278,6 +1600,13 @@ def main() -> None:
 
     core = JarvisCore(config)
 
+    if args.enroll_voice:
+        try:
+            core.enroll_voice_profile()
+        finally:
+            core.shutdown()
+        return
+
     if ui_cfg.get("enabled", True) and not args.no_ui:
         start_ui_server(
             core,
@@ -1285,6 +1614,7 @@ def main() -> None:
             ui_cfg,
             open_browser=not use_desktop,
             desktop_mode=use_desktop,
+            native_mic=args.native_voice,
         )
 
     try:
@@ -1301,7 +1631,7 @@ def main() -> None:
             core.boot()
             if args.text:
                 core.handle_text_loop()
-            elif args.native_voice:
+            elif args.native_voice or core.speaker_verifier is not None:
                 core.handle_native_voice_loop()
             else:
                 core.handle_ui_voice_loop()

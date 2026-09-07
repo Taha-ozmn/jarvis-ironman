@@ -43,6 +43,7 @@ DEFAULT_JARVIS2 = {
     "enabled": True,
     "soft_init": True,
     "db_path": "data/jarvis.db",
+    "autonomy_profile": "safe",
     # Level 3 allowed. full_autonomy auto-approves L3 with audit; catastrophic still blocked.
     "max_permission_level": 3,
     "auto_approve_level_0_1_2": True,
@@ -52,14 +53,19 @@ DEFAULT_JARVIS2 = {
     "automation_tick_seconds": 30,
     "automation_max_failures": 3,
     "confirm_timeout": 60,
+    "checkpoint_path": "data/plan_checkpoint.json",
     "memory_recall_limit": 3,
     "memory_recall_max_chars": 300,
     "weather_default_location": "",
     "weather_timeout": 8,
     "plan_max_retries": 1,
     "max_plan_steps": 12,
+    "workspace_only": True,
     "plan_timeout_sec": 300,
     "deep_max_iterations": 8,
+    "brain_start_timeout_sec": 15,
+    "max_progress_updates": 3,
+    "progress_interval_sec": 30,
     "backup_retention": 10,
     "file_watch_enabled": True,
     "mcp": {
@@ -137,6 +143,25 @@ def ensure_jarvis2_defaults(config: dict[str, Any]) -> dict[str, Any]:
     j2.update(incoming)
     j2["proactive"] = proactive
     j2["mcp"] = mcp
+    profile = str(j2.get("autonomy_profile") or "safe").strip().lower()
+    if profile not in {"safe", "full", "readonly"}:
+        profile = "safe"
+    j2["autonomy_profile"] = profile
+    if profile == "safe":
+        j2["full_autonomy"] = False
+        j2["auto_approve_dangerous"] = False
+        j2["workspace_only"] = True
+    elif profile == "readonly":
+        j2["max_permission_level"] = min(
+            int(j2.get("max_permission_level", 3)),
+            1,
+        )
+        j2["full_autonomy"] = False
+        j2["auto_approve_dangerous"] = False
+    elif profile == "full":
+        # Selecting this profile is itself the explicit opt-in. Catastrophic
+        # shell patterns remain hard-blocked in ExecutionEngine.
+        j2["full_autonomy"] = bool(incoming.get("full_autonomy", True))
     config["jarvis2"] = j2
     screen = dict(DEFAULT_SCREEN)
     screen.update(config.get("screen") or {})

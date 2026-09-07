@@ -71,6 +71,7 @@ ALLOWED_PLAN_TOOLS = frozenset(
         "media.play",
         "screen.describe",
         "screen.capture",
+        "cursor.open_workspace",
     }
 )
 
@@ -183,7 +184,10 @@ class Planner:
                     plan = filter_plan_steps(plan, "coding")
         except Exception:
             logger.exception("agent allowlist filter skipped")
-        return plan
+
+        from core.intent_schema import sanitize_plan
+
+        return sanitize_plan(plan)
 
     def _template_steps(self, lower: str, text: str) -> list[PlanStep]:
         steps: list[PlanStep] = []
@@ -324,7 +328,9 @@ def parse_llm_plan_json(raw: str, *, goal: str) -> Optional[Plan]:
         )
     if not steps:
         return None
-    return Plan(goal=goal, steps=steps, complex=True, source="llm")
+    from core.intent_schema import sanitize_plan
+
+    return sanitize_plan(Plan(goal=goal, steps=steps, complex=True, source="llm"))
 
 
 def make_llm_refine(provider: Any) -> LLMRefineFn:

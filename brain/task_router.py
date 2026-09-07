@@ -57,21 +57,17 @@ def work_update_delays(
     *,
     fast: bool = False,
     interval_sec: float = 5.0,
-    max_pings: int = 120,
+    max_pings: int = 3,
 ) -> tuple[float, ...]:
     """Absolute delays for progress pings while the agent runs.
 
     Fast/simple paths return no pings (local tools finish under ~1s).
-    Otherwise: first ping at ``interval_sec``, then every interval thereafter.
+    Otherwise: first ping at ``interval_sec``, then at most a few sparse
+    updates. Long-running work must not become a repeating voice loop.
     """
     if fast and complexity == "simple":
         return ()
     interval = max(1.0, float(interval_sec or 5.0))
     count = max(1, int(max_pings))
-    if complexity == "deep":
-        count = max(count, 180)
-    elif complexity == "complex":
-        count = max(count, 90)
-    else:
-        count = min(count, 24)
+    count = min(count, max(1, int(max_pings)))
     return tuple(interval * (i + 1) for i in range(count))

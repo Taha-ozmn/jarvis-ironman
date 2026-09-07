@@ -172,7 +172,7 @@ class BriefingTests(unittest.TestCase):
             memory.create("Prefers British accent", category="preference")
             gen = BriefingGenerator(tasks, memory, db, user_name="Taha", language="en")
             briefing = gen.generate()
-            self.assertIn("Brifing", briefing.voice)
+            self.assertIn("Briefing", briefing.voice)
             self.assertIn("Ship Phase 4", briefing.detail)
             db.close()
 

@@ -256,6 +256,20 @@ class YouTubeRoutingTests(unittest.TestCase):
         self.assertEqual(match.request.tool_name, "browser.open_url")
         self.assertEqual(match.request.arguments["url"], self.YT_URL)
 
+    def test_github_account_opens_website_not_app(self) -> None:
+        match = self.router.route("github hesabımı aç")
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertEqual(match.request.tool_name, "browser.open_url")
+        self.assertEqual(match.request.arguments["url"], "https://github.com")
+
+    def test_misheard_github_opens_website(self) -> None:
+        match = self.router.route("githuub aç")
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertEqual(match.request.tool_name, "browser.open_url")
+        self.assertEqual(match.request.arguments["url"], "https://github.com")
+
     def test_router_youtube_dan_video(self) -> None:
         match = self.router.route("youtube'dan video aç")
         self.assertIsNotNone(match)

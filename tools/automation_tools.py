@@ -170,3 +170,21 @@ class BriefingTool(BaseTool):
                 text = text[:280] + "…"
             return ToolResult(ok=True, data=text)
         return ToolResult(ok=True, data=briefing.voice)
+
+
+class SuggestionsTool(BaseTool):
+    name = "proactive.suggestions"
+    description = "Contextual proactive suggestions based on tasks and session state"
+    permission_level = PermissionLevel.READ
+    input_schema: dict = {}
+
+    def __init__(self, runner: Any) -> None:
+        self._runner = runner
+
+    def run(self, arguments: dict[str, Any]) -> ToolResult:
+        last_command = str(arguments.get("last_command") or "").strip()
+        try:
+            speech = self._runner(last_command=last_command)
+        except Exception as err:
+            return ToolResult(ok=False, error=str(err))
+        return ToolResult(ok=True, data=speech)

@@ -14,6 +14,7 @@ from tools.automation_tools import (
     AutomationListTool,
     AutomationRunTool,
     BriefingTool,
+    SuggestionsTool,
 )
 from tools.browser_tools import (
     BrowserClickTool,
@@ -35,7 +36,7 @@ from tools.git_tools import (
     GitPushTool,
     GitStatusTool,
 )
-from tools.macos_tools import (
+from tools.upwork_tools import UpworkAuditTool
     ClipboardReadTool,
     ClipboardWriteTool,
     CloseAppTool,
@@ -43,6 +44,7 @@ from tools.macos_tools import (
     FinderRevealTool,
     ListAppsTool,
     NotifyTool,
+    OpenCursorWorkspaceTool,
     OpenAppTool,
     ProcessListTool,
     ShellTool,
@@ -59,12 +61,14 @@ from tools.memory_tools import (
     MemorySaveTool,
     MemorySearchTool,
     MemorySessionCaptureTool,
+    MemoryTemporalRecallTool,
     PreferenceApplyTool,
 )
 from tools.calendar_tools import CalendarCreateEventTool, CalendarListTodayTool
 from tools.github_tools import GithubCreateIssueTool, GithubListIssuesTool, GithubListPullsTool
+from tools.improvement_tools import ImprovementProposeTool, ImprovementStatusTool
 from tools.permissions_tools import CheckPermissionsTool
-from tools.plan_tools import PlanRunTool, SystemBackupTool
+from tools.plan_tools import PlanResumeTool, PlanRunTool, SystemBackupTool
 from tools.patch_tools import ApplyPatchTool
 from tools.project_tools import ProjectGetTool, ProjectListTool, ProjectSetActiveTool
 from tools.registry import ToolRegistry
@@ -87,6 +91,9 @@ def register_phase3_tools(
     working_dir: Optional[Callable[[], Any]] = None,
     backup: Any = None,
     plan_runner: Any = None,
+    plan_resume_runner: Any = None,
+    suggestions_runner: Any = None,
+    improvement_engine: Any = None,
     llm: Any = None,
     jarvis2_config: Optional[dict[str, Any]] = None,
     jarvis_language: str = "en-GB",
@@ -114,6 +121,7 @@ def register_phase3_tools(
 
     real_tools: list = [
         OpenAppTool(macos),
+        OpenCursorWorkspaceTool(macos),
         ListAppsTool(macos),
         CloseAppTool(macos),
         TimeTool(),
@@ -146,6 +154,7 @@ def register_phase3_tools(
         MemoryListTool(memory),
         MemoryAboutUserTool(layers, language=jarvis_language),
         MemoryForgetTool(layers),
+        MemoryTemporalRecallTool(layers, language=jarvis_language),
         TaskCreateTool(tasks),
         TaskListTool(tasks),
         TaskCompleteTool(tasks),
@@ -178,6 +187,7 @@ def register_phase3_tools(
         DevRunCommandTool(wd),
         FixCycleTool(wd),
         ApplyPatchTool(wd, llm=llm),
+        UpworkAuditTool(),
     ]
     if research_agent_runner is not None:
         real_tools.append(ResearchAgentTool(research_agent_runner))
@@ -189,6 +199,8 @@ def register_phase3_tools(
         real_tools.append(SystemBackupTool(backup))
     if plan_runner is not None:
         real_tools.append(PlanRunTool(plan_runner))
+    if plan_resume_runner is not None:
+        real_tools.append(PlanResumeTool(plan_resume_runner))
     if projects is not None:
         real_tools.extend(
             [
@@ -210,6 +222,15 @@ def register_phase3_tools(
         )
     if briefing is not None:
         real_tools.append(BriefingTool(briefing))
+    if suggestions_runner is not None:
+        real_tools.append(SuggestionsTool(suggestions_runner))
+    if improvement_engine is not None:
+        real_tools.extend(
+            [
+                ImprovementStatusTool(improvement_engine),
+                ImprovementProposeTool(improvement_engine),
+            ]
+        )
 
     for tool in real_tools:
         registry.register(tool)

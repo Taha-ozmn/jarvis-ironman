@@ -85,13 +85,13 @@ class TrivialMemoryTests(unittest.TestCase):
 class PersonalityAndLatencyTests(unittest.TestCase):
     def test_personality_loads(self) -> None:
         p = load_personality()
-        self.assertEqual(p.get("persona"), "professional")
+        self.assertEqual(p.get("persona"), "iron_man")
         self.assertIn("efendim", (p.get("speech") or {}).get("forbid_phrases") or [])
 
     def test_ensure_defaults_wires_personality(self) -> None:
         cfg = ensure_jarvis2_defaults({"jarvis": {}, "jarvis2": {}})
         self.assertIn("personality", cfg)
-        self.assertEqual(cfg["personality"]["language"], "tr-TR")
+        self.assertEqual(cfg["personality"]["language"], "en-GB")
 
     def test_latency_request_id(self) -> None:
         tmp = tempfile.TemporaryDirectory()

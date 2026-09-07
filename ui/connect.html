@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>J.A.R.V.I.S. — Phone Link</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #020810;
+      color: #00d4ff;
+      font-family: 'SF Pro Text', system-ui, sans-serif;
+      padding: 2rem;
+    }
+    .card {
+      max-width: 420px;
+      width: 100%;
+      border: 1px solid rgba(0, 212, 255, 0.35);
+      border-radius: 8px;
+      padding: 2rem;
+      text-align: center;
+      background: rgba(0, 212, 255, 0.04);
+    }
+    h1 {
+      font-size: 1rem;
+      letter-spacing: 0.35em;
+      margin-bottom: 0.5rem;
+    }
+    p { opacity: 0.75; font-size: 0.9rem; line-height: 1.5; margin-bottom: 1.5rem; }
+    .url {
+      font-family: 'SF Mono', Menlo, monospace;
+      font-size: 0.85rem;
+      word-break: break-all;
+      padding: 0.75rem;
+      border: 1px solid rgba(0, 212, 255, 0.25);
+      border-radius: 4px;
+      margin-bottom: 1rem;
+      color: #aaddff;
+    }
+    #qr { display: block; margin: 1rem auto; width: 240px; height: 240px; background: #e8f6ff; border-radius: 8px; padding: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+    button {
+      background: rgba(0, 212, 255, 0.12);
+      border: 1px solid #00d4ff;
+      color: #00d4ff;
+      padding: 0.65rem 1.25rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font: inherit;
+    }
+    button:active { opacity: 0.7; }
+    .hint { margin-top: 1rem; font-size: 0.75rem; opacity: 0.55; }
+    .warn { color: #ffaa00; margin-bottom: 1rem; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>J.A.R.V.I.S.</h1>
+    <p>Copy the private <strong>HTTPS</strong> link below and open it on your iPhone. The link contains a local pairing token and must not be shared. Use the same local network as this Mac.</p>
+    <div id="warn" class="warn" hidden></div>
+    <img id="qr" alt="Scan with iPhone camera to pair" hidden />
+    <div class="url" id="mobile-url">Loading…</div>
+    <button type="button" id="copy-btn">Copy link</button>
+    <p class="hint" id="tls-hint" hidden>
+      First visit on iPhone: Safari → Show Details → visit this website (trust once). Then tap Enable Microphone in the app.
+    </p>
+    <p class="hint">Safari → Share → Add to Home Screen for the app icon.</p>
+  </div>
+  <script>
+    const urlEl = document.getElementById('mobile-url');
+    const warnEl = document.getElementById('warn');
+    const tlsHint = document.getElementById('tls-hint');
+    const copyBtn = document.getElementById('copy-btn');
+
+    fetch('/api/connect')
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data.ok || !data.mobile_url) {
+          urlEl.textContent = 'Could not resolve LAN address — check Wi‑Fi.';
+          return;
+        }
+        urlEl.textContent = data.mobile_url;
+        const qr = document.getElementById('qr');
+        if (qr) { qr.src = '/api/qr.svg'; qr.hidden = false; }
+        if (data.tls_enabled) tlsHint.hidden = false;
+        if (data.lan_ip) {
+          warnEl.textContent = 'Do not use 127.0.0.1 on your phone — current Mac address: ' + data.lan_ip;
+          warnEl.hidden = false;
+        }
+        if (data.mic_note) {
+          warnEl.textContent = (warnEl.hidden ? '' : warnEl.textContent + ' ') + data.mic_note;
+          warnEl.hidden = false;
+        }
+        copyBtn.onclick = () => {
+          navigator.clipboard.writeText(data.mobile_url).then(() => {
+            copyBtn.textContent = 'Copied';
+            setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 2000);
+          });
+        };
+      })
+      .catch(() => {
+        urlEl.textContent = 'HUD offline — start JARVIS on your Mac first.';
+      });
+  </script>
+</body>
+</html>

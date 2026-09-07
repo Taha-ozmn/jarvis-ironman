@@ -37,7 +37,7 @@ class CommandRouter:
     APP_HINTS = (
         "spotify", "chrome", "safari", "cursor", "terminal", "finder",
         "notes", "music", "slack", "discord", "mail", "calendar", "photos",
-        "settings", "ayarlar", "youtube", "yt",
+        "settings", "ayarlar", "youtube", "yt", "github", "git hub", "githuub",
     )
 
     def route(self, command: str) -> Optional[RouteMatch]:
@@ -56,8 +56,13 @@ class CommandRouter:
             or self._permissions(lower)
             or self._backup(lower)
             or self._plan(lower, text)
+            or self._memory(lower, text)
+            or self._resume_plan(lower)
+            or self._suggestions(lower)
+            or self._self_improvement(lower)
             or self._automation(lower, text)
             or self._briefing(lower)
+            or self._cursor_workspace(lower, text)
             or self._projects(lower, text)
             or self._git(lower, text)
             or self._dev(lower, text)
@@ -72,7 +77,6 @@ class CommandRouter:
             or self._processes(lower)
             or self._finder(lower, text)
             or self._browser(lower, text)
-            or self._memory(lower, text)
             or self._tasks(lower, text)
             or self._volume(lower)
             or self._time_date(lower)
@@ -85,6 +89,149 @@ class CommandRouter:
             or self._shell(lower, text)
         )
         return match
+
+    def _cursor_workspace(self, lower: str, text: str) -> Optional[RouteMatch]:
+        """Open a local Desktop workspace in Cursor instead of the app alone."""
+
+        cursor_terms = (
+            "cursor",
+            "kursor",
+            "crusoe",
+            "purser",
+            "cursur",
+            "cursorr",
+            "jours",
+            "jors",
+        )
+        workspace_terms = (
+            "yeni repo",
+            "new repo",
+            "new repository",
+            "repository",
+            "rapi",
+            "repi",
+            "rabi",
+            "workspace",
+            "çalışma alanı",
+            "calisma alani",
+            "klasör",
+            "klasor",
+            "folder",
+            "proje",
+            "project",
+            "dosya",
+            "file",
+            "masaüst",
+            "desktop",
+        )
+        open_terms = ("aç", "ac", "open", "launch", "başlat", "baslat")
+        if not any(term in lower for term in cursor_terms):
+            return None
+        if not any(term in lower for term in workspace_terms):
+            return None
+        has_new_repository_intent = any(
+            term in lower
+            for term in (
+                "yeni repo",
+                "yeni repository",
+                "new repo",
+                "new repository",
+                "rapi",
+                "repi",
+                "rabi",
+            )
+        )
+        if not any(term in lower for term in open_terms) and not has_new_repository_intent:
+            return None
+
+        initialize_git = any(
+            term in lower
+            for term in (
+                "yeni repo",
+                "new repo",
+                "new repository",
+                "repository",
+                "rapi",
+                "repi",
+                "rabi",
+            )
+        )
+        path = self._extract_cursor_workspace_path(text)
+        return RouteMatch(
+            ExecutionRequest(
+                "cursor.open_workspace",
+                {
+                    "path": path,
+                    "initialize_git": initialize_git,
+                },
+            ),
+            speech_hint="workspace",
+        )
+
+    @staticmethod
+    def _extract_cursor_workspace_path(text: str) -> str:
+        """Extract a named Desktop item; otherwise let the tool choose newest."""
+
+        raw = (text or "").strip()
+        lower = raw.lower()
+        cursor_match = re.search(
+            r"(?:\s+(?:in|with)\s+)?"
+            r"(?:cursor|kursor|crusoe|purser|cursur|cursorr|jours|jors)"
+            r"(?:['’]?(?:da|de))?\b",
+            lower,
+        )
+        before_cursor = raw[: cursor_match.start()] if cursor_match else raw
+        desktop_match = re.search(
+            r"(?:masaüst(?:ünde|ündeki|te|teki)|desktop)\s+(.+)$",
+            before_cursor,
+            re.I,
+        )
+        if desktop_match:
+            candidate = desktop_match.group(1)
+        else:
+            candidate = before_cursor
+        candidate = re.sub(
+            r"^(?:please\s+)?(?:open|aç|ac|launch|başlat|baslat)\s+",
+            "",
+            candidate,
+            flags=re.I,
+        )
+        candidate = re.sub(r"\s+(?:in|with|içinde|icinde)\s*$", "", candidate, flags=re.I)
+        candidate = re.sub(
+            r"\b(?:yeni|new)\s+(?:repo|repository)\s+(?:olarak|as)\s*$",
+            "",
+            candidate,
+            flags=re.I,
+        )
+        candidate = re.sub(
+            r"\b(?:oluşturduğum|olusturdugum|created|my)\s+"
+            r"(?:dosya\w*|file|klasör\w*|klasor\w*|folder)\b",
+            "",
+            candidate,
+            flags=re.I,
+        )
+        candidate = re.sub(
+            r"\s+(?:dosyasını|dosyasi|dosya|file|klasörünü|klasoru|"
+            r"klasör|folder)\s*$",
+            "",
+            candidate,
+            flags=re.I,
+        )
+        candidate = candidate.strip(" .,:;'\"")
+        generic = {
+            "",
+            "oluşturduğum",
+            "olusturdugum",
+            "created",
+            "my",
+            "dosyayı",
+            "dosyayi",
+            "file",
+            "klasörü",
+            "klasoru",
+            "folder",
+        }
+        return "" if candidate.lower() in generic else candidate
 
     def _preference(self, lower: str, text: str) -> Optional[RouteMatch]:
         """Name / address preferences — fast memory path, no Cursor agent."""
@@ -371,6 +518,17 @@ class CommandRouter:
             )
         ):
             return RouteMatch(ExecutionRequest("github.list_pulls", {}))
+        if any(term in lower for term in ("github", "git hub", "githuub", "githab")):
+            if has_open_verb(lower) or any(
+                term in lower for term in ("hesap", "account", "profil", "profile")
+            ):
+                return RouteMatch(
+                    ExecutionRequest(
+                        "browser.open_url",
+                        {"url": SITE_OPEN_URLS["github"]},
+                    ),
+                    speech_hint="site",
+                )
         return None
 
     def _clipboard(self, lower: str, text: str) -> Optional[RouteMatch]:
@@ -523,6 +681,71 @@ class CommandRouter:
             background = any(k in lower for k in ("background", "arka planda", "uzun"))
             return RouteMatch(
                 ExecutionRequest("plan.run", {"goal": goal, "background": background})
+            )
+        return None
+
+    def _resume_plan(self, lower: str) -> Optional[RouteMatch]:
+        hints = (
+            "devam et",
+            "devam",
+            "kaldığımız yerden",
+            "kaldigimiz yerden",
+            "kaldığımız yer",
+            "kaldigimiz yer",
+            "continue plan",
+            "resume plan",
+            "resume",
+            "continue",
+            "carry on",
+            "pick up where",
+        )
+        if lower in ("devam", "continue", "resume", "devam et"):
+            return RouteMatch(ExecutionRequest("plan.resume", {}))
+        if any(h in lower for h in hints):
+            return RouteMatch(ExecutionRequest("plan.resume", {}))
+        return None
+
+    def _suggestions(self, lower: str) -> Optional[RouteMatch]:
+        hints = (
+            "what should i do",
+            "what should we do",
+            "any suggestions",
+            "suggest something",
+            "öneri ver",
+            "ne yapmalıyım",
+            "ne yapmaliyim",
+            "ne önerirsin",
+            "ne onerirsin",
+            "tavsiye ver",
+            "proactive suggestion",
+        )
+        if any(h in lower for h in hints):
+            return RouteMatch(ExecutionRequest("proactive.suggestions", {}))
+        return None
+
+    def _self_improvement(self, lower: str) -> Optional[RouteMatch]:
+        status_hints = (
+            "self improvement status",
+            "self-improvement status",
+            "kendini geliştirme durumu",
+            "kendini gelistirme durumu",
+            "iyileştirme önerileri",
+            "iyilestirme onerileri",
+        )
+        propose_hints = (
+            "kendini geliştir",
+            "kendini gelistir",
+            "self improve",
+            "improve yourself",
+        )
+        if any(h in lower for h in status_hints):
+            return RouteMatch(ExecutionRequest("self.improvement_status", {}))
+        if any(h in lower for h in propose_hints):
+            return RouteMatch(
+                ExecutionRequest(
+                    "self.improvement_status",
+                    {},
+                )
             )
         return None
 
@@ -690,6 +913,19 @@ class CommandRouter:
                 "ekranı görebiliyor",
                 "ekrani gorebiliyor",
                 "ekranımı görebiliyor",
+                "ekranımı gör",
+                "ekranimi gor",
+                "ekranıma bak",
+                "ekranima bak",
+                "ekrana bak",
+                "ekranımı göster",
+                "ekranimi goster",
+                "ekranımı oku",
+                "ekranimi oku",
+                "ekranımda ne görüyorsun",
+                "ekranimda ne goruyorsun",
+                "ekranı incele",
+                "ekrani incele",
                 "can you see my screen",
                 "do you see my screen",
                 "see my screen",
@@ -708,9 +944,15 @@ class CommandRouter:
                     "görebiliyor",
                     "gorebiliyor",
                     "görüyor musun",
+                    "gör",
+                    "gor",
+                    "bak",
+                    "incele",
                     "see",
                     "look",
                     "ne var",
+                "show me my screen",
+                "read my screen",
                 )
             ):
                 return RouteMatch(ExecutionRequest("screen.describe", {}))
@@ -1013,6 +1255,27 @@ class CommandRouter:
         )
         if any(h in lower for h in about_hints):
             return RouteMatch(ExecutionRequest("memory.about_user", {}))
+
+        temporal_hints = (
+            "dün ne",
+            "dun ne",
+            "yesterday",
+            "bugün ne",
+            "bugun ne",
+            "today what",
+            "geçen hafta",
+            "gecen hafta",
+            "last week",
+            "dünkü",
+            "dunku",
+            "kaldığımız yer",
+            "kaldigimiz yer",
+            "where we left off",
+        )
+        if any(h in lower for h in temporal_hints):
+            return RouteMatch(
+                ExecutionRequest("memory.temporal_recall", {"query": text.strip()}),
+            )
 
         # «Bunu unut» / forget
         forget_hints = (
@@ -1407,7 +1670,9 @@ class CommandRouter:
                     )
                 )
             app = resolve_app_query(target, aliases=MacOSController.APP_ALIASES)
-            name = app.name if app is not None else target
+            # Preserve the spoken target; OpenAppTool resolves aliases and
+            # the original value keeps follow-up context and diagnostics clear.
+            name = target if app is not None else target
             return RouteMatch(
                 ExecutionRequest("system.open_app", {"name": name})
             )

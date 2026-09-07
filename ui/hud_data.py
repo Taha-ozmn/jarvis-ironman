@@ -133,6 +133,27 @@ def build_command_center(os_core: Any) -> dict[str, Any]:
     except Exception:
         pending = []
 
+    brain: dict[str, Any] = {}
+    try:
+        health = os_core.health()
+        brain = dict(health.get("brain") or {})
+    except Exception:
+        brain = {"bound": False, "ready": False, "degraded": True}
+
+    screen: dict[str, Any] = {}
+    try:
+        context = os_core.context.get_extra("current_screen_context", {}) or {}
+        if isinstance(context, dict):
+            screen = {
+                "ok": bool(context.get("ok")),
+                "app": str(context.get("app") or ""),
+                "title": str(context.get("title") or ""),
+                "summary": str(context.get("summary") or "")[:240],
+                "updated_at": context.get("updated_at"),
+            }
+    except Exception:
+        screen = {"ok": False}
+
     current_task = None
     for t in tasks:
         if isinstance(t, dict) and t.get("status") == "in_progress":
@@ -183,4 +204,7 @@ def build_command_center(os_core: Any) -> dict[str, Any]:
         "diagnostics": diagnostics,
         "settings": settings,
         "pending_confirmations": pending,
+        "brain": brain,
+        "screen": screen,
+        "autonomy_profile": str(j2.get("autonomy_profile") or "safe"),
     }

@@ -1,0 +1,9 @@
+Hi — I read your post for {{JOB_TITLE}} and I'm a strong fit for the Swift/iOS scope.
+
+I've shipped {{RELEVANT_APP}} using {{TECH_STACK}} (SwiftUI/UIKit, REST APIs, Git). I work in clear milestones with daily updates and TestFlight builds you can test early.
+
+For your project I'd start with: {{FIRST_MILESTONE}}.
+
+Happy to jump on a quick call or answer questions here. Available {{HOURS}} hrs/week from Turkey (fluent English).
+
+— Taha

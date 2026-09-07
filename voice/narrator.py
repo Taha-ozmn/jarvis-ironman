@@ -5,11 +5,12 @@ from __future__ import annotations
 import random
 import re
 
+from core.timeout_responses import TimeoutResponses, classify_intent
+
 
 class JarvisNarrator:
     """Short English acknowledgements while JARVIS works — no chatbot filler."""
 
-    # Deliberately no "Bakıyorum." — that cadence sounds like generic AI TTS.
     GENERIC_ACKS = (
         "Right away.",
         "Understood.",
@@ -19,10 +20,10 @@ class JarvisNarrator:
     )
 
     WORK_UPDATES = (
-        "Still working on that, sir.",
+        "Still working on that.",
         "Hang on — still on it.",
         "Almost there.",
-        "Thinking it through, sir.",
+        "Thinking it through.",
         "Working the next step now.",
         "Still on your request.",
     )
@@ -55,13 +56,24 @@ class JarvisNarrator:
         "Hazırım.",
     )
 
+    def __init__(self, *, user_name: str = "Taha") -> None:
+        self.user_name = user_name
+        self._responses = TimeoutResponses(user_name=user_name, use_name=True)
+
     def instant_ack(self, command: str, *, language: str = "en") -> str:
         """Brief acknowledgement while the AI processes — English only for TTS."""
-        del command, language
+        del language
+        intent = classify_intent(command)
+        if intent == "open_app":
+            return random.choice(("Opening now.", "On it — launching.", "Right away."))
+        if intent == "build":
+            return random.choice(("Understood — building.", "On it — full build.", "Starting now."))
         return random.choice(self.GENERIC_ACKS)
 
-    def work_update(self, index: int = 0, *, language: str = "en") -> str:
+    def work_update(self, index: int = 0, *, language: str = "en", command: str = "") -> str:
         del language
+        if command:
+            return self._responses.progress(command, index)
         return self.WORK_UPDATES[index % len(self.WORK_UPDATES)]
 
     def boot_line(self, index: int) -> str:

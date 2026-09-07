@@ -18,6 +18,7 @@ from core.request_context import set_brain_path, set_request_id
 logger = logging.getLogger(__name__)
 
 CommandFn = Callable[[str], Optional[str]]
+CommandEnqueueFn = Callable[[str], bool]
 HealthFn = Callable[[], dict[str, Any]]
 StateFn = Callable[[], dict[str, Any]]
 
@@ -74,8 +75,9 @@ def dispatch_command(
     *,
     os_core: Any = None,
     command_fn: Optional[CommandFn] = None,
+    enqueue_fn: Optional[CommandEnqueueFn] = None,
 ) -> dict[str, Any]:
-    """Run FastBrain via JarvisOS; optional JarvisCore.process_command fallback."""
+    """Queue a command or run the legacy synchronous handler."""
     command = (text or "").strip()
     rid = uuid4().hex[:12]
     set_request_id(rid)
@@ -98,6 +100,21 @@ def dispatch_command(
             }
         except Exception as err:
             logger.exception("REST command_fn failed")
+            return {"ok": False, "error": str(err), "request_id": rid}
+
+    if enqueue_fn is not None:
+        try:
+            queued = bool(enqueue_fn(command))
+            return {
+                "ok": queued,
+                "speech": "",
+                "path": "queued",
+                "request_id": rid,
+                "queued": queued,
+                **({} if queued else {"error": "command queue full"}),
+            }
+        except Exception as err:
+            logger.exception("REST enqueue failed")
             return {"ok": False, "error": str(err), "request_id": rid}
 
     if os_core is not None:
@@ -141,6 +158,7 @@ def attach_rest_routes(
     *,
     os_core: Any = None,
     command_fn: Optional[CommandFn] = None,
+    enqueue_fn: Optional[CommandEnqueueFn] = None,
     health_fn: Optional[HealthFn] = None,
     state_fn: Optional[StateFn] = None,
 ) -> None:
@@ -165,8 +183,21 @@ def attach_rest_routes(
         if not text:
             qs = request.rel_url.query
             text = str(qs.get("text") or qs.get("command") or "").strip()
-        result = dispatch_command(text, os_core=os_core, command_fn=command_fn)
-        status = 200 if result.get("ok") else (400 if "empty" in str(result.get("error")) else 503)
+        result = dispatch_command(
+            text,
+            os_core=os_core,
+            command_fn=command_fn,
+            enqueue_fn=enqueue_fn,
+        )
+        status = (
+            202
+            if result.get("ok") and result.get("queued")
+            else 200
+            if result.get("ok")
+            else 400
+            if "empty" in str(result.get("error"))
+            else 503
+        )
         return web.json_response(result, status=status)
 
     app.router.add_get("/api/health", _health)

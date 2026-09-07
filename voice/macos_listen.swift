@@ -3,6 +3,9 @@ import AVFoundation
 import Foundation
 
 let timeout = CommandLine.arguments.count > 1 ? Double(CommandLine.arguments[1]) ?? 12.0 : 12.0
+let idleTimeout = CommandLine.arguments.count > 2 ? Double(CommandLine.arguments[2]) ?? 1.5 : 1.5
+let silenceTimeout = CommandLine.arguments.count > 3 ? Double(CommandLine.arguments[3]) ?? 1.4 : 1.4
+let speechThresholdDb: Float = -45.0
 
 func waitForMicPermission() -> Bool {
     switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -52,6 +55,7 @@ let settings: [String: Any] = [
 let recorder: AVAudioRecorder
 do {
     recorder = try AVAudioRecorder(url: tempURL, settings: settings)
+    recorder.isMeteringEnabled = true
     recorder.prepareToRecord()
 } catch {
     fputs("ERROR: Recorder init failed — \(error.localizedDescription)\n", stderr)
@@ -63,7 +67,35 @@ guard recorder.record() else {
     exit(4)
 }
 
-Thread.sleep(forTimeInterval: timeout)
+let recordingStartedAt = Date()
+var speechDetected = false
+var silenceStartedAt: Date?
+while true {
+    Thread.sleep(forTimeInterval: 0.1)
+    recorder.updateMeters()
+    let now = Date()
+    let elapsed = now.timeIntervalSince(recordingStartedAt)
+    let power = recorder.averagePower(forChannel: 0)
+
+    if power > speechThresholdDb {
+        speechDetected = true
+        silenceStartedAt = nil
+    } else if speechDetected {
+        if silenceStartedAt == nil {
+            silenceStartedAt = now
+        }
+        if let silenceStartedAt,
+           now.timeIntervalSince(silenceStartedAt) >= silenceTimeout {
+            break
+        }
+    } else if elapsed >= idleTimeout {
+        break
+    }
+
+    if elapsed >= timeout {
+        break
+    }
+}
 recorder.stop()
 
 let fileSize = (try? FileManager.default.attributesOfItem(atPath: tempURL.path)[.size] as? Int) ?? 0

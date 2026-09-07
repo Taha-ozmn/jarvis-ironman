@@ -5,11 +5,11 @@ Tony Stark'ın yapay zeka asistanı **JARVIS**'i Cursor API ile sıfırdan inşa
 ## Özellikler
 
 - **Sesli konuşma** — "Jarvis" uyandırma kelimesi ile sürekli dinleme
-- **Türkçe ses** — `tr-TR-EmelNeural` (edge-tts), SSML durakları, sakin profesyonel tempo
+- **Türkçe giriş, İngilizce JARVIS yanıtı** — Türkçe STT, `en-GB-RyanNeural` TTS
 - **Cursor API beyin** — Cursor SDK ile çok turlu akıllı sohbet (DeepBrain)
-- **Iron Man HUD** — komuta merkezi; durum: Listening / Thinking / Working / Speaking
+- **Iron Man HUD** — komuta merkezi; Listening / Thinking / Working / Speaking ve neural-core durumu
 - **macOS kontrolü** — uygulama, takvim, mail, ekran, GitHub (`gh` / `GITHUB_TOKEN`)
-- **Türkçe-only UX** — yanıtlar Türkçe; İngilizce TTS kapalı
+- **Tam otonom çalışma** — planlama, araç yürütme, doğrulama, bellek ve 7/24 watchdog
 
 ## Gereksinimler
 
@@ -55,6 +55,25 @@ nano .env
 | Saat | "Jarvis saat kaç" |
 | Genel soru | "Jarvis bugün hava nasıl" |
 | Kod görevi | "Jarvis bu projede bug bul" |
+
+### iPhone’dan izleme ve kontrol
+
+JARVIS çalışırken Mac’te aşağıdaki bağlantıyı açın:
+
+```text
+http://127.0.0.1:8765/connect
+```
+
+Sayfadaki özel HTTPS bağlantısını iPhone’da açın. Bağlantı token içerir; bu
+adresi paylaşmayın. Token yalnızca JARVIS süreci çalıştığı sürece geçerlidir ve
+launchd yeniden başlatıldığında yeni bağlantı `/connect` sayfasından alınır.
+iPhone’da ilk kez mikrofon iznini verin; ardından mobil panel sürekli dinleme,
+metin komutu, STT, TTS, thinking trace, durum, ekran özeti ve onay akışlarını
+kullanabilir.
+
+Panel komutları ana JARVIS kuyruğuna girer. REST kullanan istemciler aynı token’ı
+`X-Jarvis-Pairing-Token` başlığında göndermelidir. Eşleşmemiş istemciler komut,
+mikrofon, TTS ve durum API’lerine erişemez.
 
 ## Mimari
 
@@ -110,13 +129,37 @@ Ekran Kaydı: `docs/MACOS_PERMISSIONS.md`.
 `config.yaml` → `jarvis2.enabled: false` ile v2 çekirdeği kapatılabilir.
 
 Örnek komutlar: «Jarvis status», «sistem durumunu kontrol et», «Jettel üzerinde çalış», «plan and organize», «İndirilenlere PDF gelince söyle …», «yedekle», «Jarvis dur».
+
+### Tam JARVIS çalışma modu
+
+Uzun bir kodlama veya araştırma görevi başladığında JARVIS bir kez kabul
+bildirimi verir, en fazla üç seyrek ilerleme güncellemesi gönderir ve görevi
+arka planda tamamlar. Sürekli "tekrar deneyeyim mi?" sorusu üretmez. Başarısız
+adım checkpoint'e yazılır; `devam et` komutu kaldığı adımdan devam eder.
+
+Cursor bağlantısı yoksa yerel macOS araçları, SQLite belleği ve otomasyon
+motoru çalışmaya devam eder. Deep coding görevleri için dürüstçe bağlantı
+durumu bildirilir; araç kanıtı olmadan başarı söylenmez.
+
+JARVIS'in kendini geliştirmesi sınırsız kaynak kodu değişikliği değildir.
+Hatalardan sınırlı bir iyileştirme önerisi oluşturur, izole git worktree'sinde
+test eder ve ana çalışma alanına uygulanmadan önce Taha'nın onayını ister.
+
+7/24 servis kurulumu için `docs/MACOS_PERMISSIONS.md` içindeki launchd
+adımlarını kullanın. Bu çalışma alanındaki etkin profil `jarvis2.autonomy_profile:
+full` değeridir: JARVIS görevleri onay beklemeden planlar, çalıştırır ve doğrular.
+Yıkıcı shell kalıpları yine de güvenlik katmanında sert olarak engellenir.
+Güvenli varsayılanlara dönmek için profili `safe` yapın.
 ## Ses ayarları
 
-`config.yaml` → `voice:` (Türkçe-only, varsayılan Emel):
+`config.yaml` → `voice:` (Türkçe giriş, İngilizce yanıt, varsayılan Ryan):
 
 ```yaml
 voice:
   turkish_voice: tr-TR-EmelNeural
+  listen_languages:
+    - tr-TR
+    - en-US
   rate: -10%
   pitch: -4Hz
   ssml: true
@@ -125,6 +168,29 @@ voice:
 Örnek cümle: `.venv/bin/python scripts/test_voice.py --out /tmp/jarvis_emel.mp3 && afplay /tmp/jarvis_emel.mp3`
 
 Yelda (`say -v Yelda`) yalnızca Emel denemeleri bittikten sonra yedek.
+
+Native mikrofon, aynı kaydı Türkçe ve İngilizce STT ile değerlendirir; bu yüzden
+“ekranımı gör”, “open Chrome” ve Türkçe-İngilizce karışık komutlar desteklenir.
+
+### Yerel ses kimliği
+
+Ses kimliği doğrulaması hız için varsayılan olarak kapalıdır
+(`voice_identity.enabled: false`). Bu durumda mikrofon kaydı doğrudan STT'ye
+gider ve profil kontrolü komut akışını yavaşlatmaz. Yalnızca isterseniz
+`voice_identity.enabled: true` yaparak yerel doğrulamayı etkinleştirebilirsiniz;
+profil yokken sesli komut çalıştırılmaz:
+
+```bash
+.venv/bin/python main.py --enroll-voice
+```
+
+JARVIS dört kısa cümle okutacak ve yalnızca embedding profilini
+`data/voice_profile.json` içinde, kullanıcıya özel `0600` izinleriyle saklayacak;
+ham kayıtları saklamayacak. Profil oluşturulduktan sonra film, müzik, başka
+kişiler ve JARVIS'in kendi sesi komut kuyruğuna alınmaz. Bu katman biyometrik
+doğrulamadır; kusursuz kimlik garantisi değildir. Yanlış ret olursa enrollment'ı
+sessiz bir ortamda tekrarlayın. Browser mikrofonu, doğrulanamadığı için bu
+modda sesli komut olarak kabul edilmez; native macOS mikrofon kullanılır.
 
 ## Sorun giderme
 

@@ -10,9 +10,18 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
-import edge_tts
+try:
+    import edge_tts as _edge_tts
+except ImportError:  # pragma: no cover - native-first still works offline
+    _edge_tts = None  # type: ignore[assignment]
+
+
+def _edge_tts_module() -> Any:
+    if _edge_tts is None:
+        raise RuntimeError("edge-tts is not installed")
+    return _edge_tts
 
 from voice.speech_clean import (
     normalize_for_dedupe,
@@ -37,8 +46,8 @@ DEFAULT_TURKISH_VOICE = "tr-TR-EmelNeural"
 DEFAULT_ENGLISH_VOICE = "en-GB-RyanNeural"
 AHMET_VOICE = "tr-TR-AhmetNeural"
 # Slightly slower + lower — calm professional, not rushed neural TTS.
-DEFAULT_RATE = "+5%"
-DEFAULT_PITCH = "-2Hz"
+DEFAULT_RATE = "-10%"
+DEFAULT_PITCH = "-4Hz"
 DEFAULT_VOLUME = "+0%"
 DEFAULT_PHRASE_GAP_SEC = 0.04
 DEFAULT_USE_SSML = True
@@ -139,12 +148,14 @@ def format_edge_error(err: BaseException) -> str:
 
 async def list_turkish_voices() -> list[str]:
     """Return ShortName list for tr-* edge-tts voices."""
+    edge_tts = _edge_tts_module()
     voices = await edge_tts.list_voices()
     return sorted(v["ShortName"] for v in voices if v["Locale"].startswith("tr-"))
 
 
 async def is_valid_edge_voice(voice: str) -> bool:
     """Check voice ID against live edge-tts catalog."""
+    edge_tts = _edge_tts_module()
     voices = await edge_tts.list_voices()
     names = {v["ShortName"] for v in voices}
     return voice in names
@@ -374,8 +385,16 @@ class VoiceSpeaker:
             self._speak_native(text)
             return
 
-        use_edge = self.engine == "edge" or (
-            self.engine == "jarvis" and self.cinematic and is_edge_voice(self.edge_voice)
+        use_edge = (
+            _edge_tts is not None
+            and (
+                self.engine == "edge"
+                or (
+                    self.engine == "jarvis"
+                    and self.cinematic
+                    and is_edge_voice(self.edge_voice)
+                )
+            )
         )
         if use_edge:
             last_err: BaseException | None = None
@@ -406,6 +425,9 @@ class VoiceSpeaker:
                         log_retry("voice.speaker", attempt+1, attempts, f"Edge TTS failed: {format_edge_error(err)}")
                         continue
             self._notify_edge_fallback(last_err)
+            # Always deliver the phrase — edge failure must not leave text-only replies.
+            self._speak_native(text)
+            return
         else:
             # Use native
             self._speak_native(text)
@@ -452,8 +474,9 @@ class VoiceSpeaker:
             if i < len(parts) - 1:
                 time.sleep(0.22)
 
-    def _make_communicate(self, text: str) -> edge_tts.Communicate:
+    def _make_communicate(self, text: str) -> Any:
         """Build Communicate; inject SSML <break> into the inner prosody body."""
+        edge_tts = _edge_tts_module()
         communicate = edge_tts.Communicate(
             text,
             self.edge_voice,

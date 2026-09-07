@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import re
+import shutil
 import subprocess
 import webbrowser
 from pathlib import Path
@@ -26,6 +27,10 @@ class MacOSController:
         "safari": "Safari",
         "spotify": "Spotify",
         "cursor": "Cursor",
+        "cursur": "Cursor",
+        "cursorr": "Cursor",
+        "jours": "Cursor",
+        "jors": "Cursor",
         "terminal": "Terminal",
         "finder": "Finder",
         "notes": "Notes",
@@ -135,8 +140,25 @@ class MacOSController:
             label = "Spotify" if intent.service == "spotify" else "YouTube"
             return f"I've searched {label} for «{intent.query}»."
 
+        # The legacy fallback must require an explicit media command. Plain
+        # substring checks are unsafe: "çalışabilir miyiz?" contains "çal"
+        # but is a question, not a request to play music.
+        explicit_media_command = re.search(
+            r"(?<!\w)(?:şarkı|sarki|müzik|muzik|music|song|track|play|"
+            r"listen|dinle|oynat|çal|cal|video)(?!\w)",
+            lower,
+            re.I,
+        )
+        explicit_service = re.search(
+            r"(?<!\w)(?:spotify|youtube|you\s*tube|yt)(?!\w)",
+            lower,
+            re.I,
+        )
+        if not explicit_media_command:
+            return None
+
         site_url = extract_site_url(text)
-        if site_url and any(t in lower for t in youtube_triggers):
+        if site_url and explicit_service and any(t in lower for t in youtube_triggers):
             try:
                 with timeout_manager.timeout_context(TimeoutType.BROWSER):
                     result = subprocess.run(
@@ -152,7 +174,7 @@ class MacOSController:
                 webbrowser.open(site_url)
             return "YouTube is open."
 
-        if any(t in lower for t in youtube_triggers):
+        if explicit_service and any(t in lower for t in youtube_triggers):
             query = self._strip_media_prefix(
                 text,
                 youtube_triggers
@@ -166,7 +188,7 @@ class MacOSController:
             webbrowser.open("https://www.youtube.com")
             return "YouTube is open."
 
-        if any(t in lower for t in spotify_triggers):
+        if explicit_service and any(t in lower for t in spotify_triggers):
             if self._is_open_command(lower) and re.search(r"\bspotify\b", lower):
                 # Bare «spotify aç» — open app (search intents already returned above)
                 if len(lower.split()) <= 3:
@@ -294,6 +316,144 @@ class MacOSController:
             return f"Opening {path.name}."
 
         return self._open_app(target)
+
+    def open_cursor_workspace(
+        self,
+        path: str = "",
+        *,
+        initialize_git: bool = False,
+    ) -> str:
+        """Open a folder in Cursor, optionally initializing a Git repository."""
+
+        target = self._resolve_workspace_path(path)
+        if target is None:
+            return "I couldn't find the requested folder or file on the Desktop."
+
+        desktop = (Path.home() / "Desktop").resolve()
+        repo_root = target if target.is_dir() else target.parent
+        should_initialize_git = initialize_git and repo_root.resolve() != desktop
+        if should_initialize_git and not (repo_root / ".git").exists():
+            try:
+                result = subprocess.run(
+                    ["git", "init"],
+                    cwd=str(repo_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as err:
+                return f"I found {target.name}, but could not initialize Git: {err}"
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                return f"I found {target.name}, but could not initialize Git: {detail}"
+
+        cursor_target = (
+            repo_root
+            if should_initialize_git or (repo_root / ".git").exists()
+            else target
+        )
+        commands: list[list[str]] = []
+        cursor_cli = shutil.which("cursor")
+        if cursor_cli:
+            commands.append([cursor_cli, str(cursor_target)])
+        commands.append(["open", "-a", "Cursor", str(cursor_target)])
+        last_error = ""
+        for command in commands:
+            try:
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as err:
+                last_error = str(err)
+                continue
+            if result.returncode == 0:
+                repo_note = (
+                    " as a Git repository"
+                    if should_initialize_git or (repo_root / ".git").exists()
+                    else ""
+                )
+                return f"Opened {target.name} in Cursor{repo_note}."
+            last_error = (result.stderr or result.stdout or "").strip()
+        return f"I found {target.name}, but could not open Cursor: {last_error}"
+
+    @staticmethod
+    def _resolve_workspace_path(raw_path: str) -> Optional[Path]:
+        """Resolve explicit paths and natural Desktop references."""
+
+        raw = (raw_path or "").strip().strip("\"'")
+        lower = raw.lower()
+        generic_markers = (
+            "desktop",
+            "masaüst",
+            "new repo",
+            "repo",
+            "repository",
+            "new repository",
+            "yeni repo",
+            "yeni repository",
+            "created file",
+            "created folder",
+            "oluşturduğum",
+            "olusturdugum",
+        )
+        if not raw or any(marker in lower for marker in generic_markers):
+            desktop = Path.home() / "Desktop"
+            if not desktop.exists():
+                return None
+            entries = [
+                item
+                for item in desktop.iterdir()
+                if not item.name.startswith(".")
+            ]
+            if not entries:
+                return desktop
+            return max(entries, key=lambda item: item.stat().st_mtime)
+
+        candidate = Path(raw).expanduser()
+        candidates = [candidate]
+        if not candidate.is_absolute():
+            candidates.extend(
+                [
+                    Path.home() / "Desktop" / raw,
+                    Path.cwd() / raw,
+                ]
+            )
+        for item in candidates:
+            if item.exists():
+                return item.resolve()
+
+        desktop = Path.home() / "Desktop"
+        if desktop.exists():
+            items = [
+                item
+                for item in desktop.iterdir()
+                if not item.name.startswith(".")
+            ]
+            for item in items:
+                if item.name.lower() == raw.lower():
+                    return item.resolve()
+            normalized_raw = raw.lower().strip()
+            partial_matches = (
+                [
+                    item
+                    for item in items
+                    if normalized_raw in item.stem.lower()
+                    or item.stem.lower() in normalized_raw
+                ]
+                if len(normalized_raw) >= 3
+                else []
+            )
+            if partial_matches:
+                return max(
+                    partial_matches,
+                    key=lambda item: item.stat().st_mtime,
+                ).resolve()
+        return None
 
     def _open_app(self, name: str, *, language: str = "en-GB") -> Optional[str]:
         from core.open_target import SITE_OPEN_URLS, normalize_open_target

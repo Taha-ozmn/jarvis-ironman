@@ -34,7 +34,7 @@ class BaseTool(abc.ABC):
     name: str
     description: str
     permission_level: PermissionLevel = PermissionLevel.READ
-    input_schema: dict[str, Any] = field(default_factory=dict)
+    input_schema: dict[str, Any] = {}
 
     def spec(self) -> ToolSpec:
         return ToolSpec(

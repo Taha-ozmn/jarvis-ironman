@@ -149,12 +149,25 @@ class SoftHardTimeoutRaceTests(unittest.TestCase):
         brain = self._make_brain()
         soft = brain._soft_timeout_message()
         self.assertTrue(soft)
-        self.assertIn("sir", soft.lower())
         self.assertNotIn("efendim", soft.lower())
+        self.assertNotIn("sir", soft.lower())
         fail = brain._timeout_fail_message()
-        self.assertIn("sir", fail.lower())
         self.assertNotIn("efendim", fail.lower())
+        self.assertNotIn("sir", fail.lower())
         self.assertNotIn("üzgünüm", fail.lower())
+
+    def test_interrupt_inflight_cancels_thought_and_run(self) -> None:
+        brain = self._make_brain()
+        brain._cancel_event = threading.Event()
+        run = MagicMock()
+        run.supports.return_value = True
+        brain._active_run = run
+
+        brain._interrupt_inflight()
+
+        self.assertTrue(brain._cancel_event.is_set())
+        run.cancel.assert_called_once()
+        self.assertIsNone(brain._active_run)
 
 
 if __name__ == "__main__":

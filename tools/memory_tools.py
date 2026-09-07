@@ -8,6 +8,8 @@ from memory.extractor import parse_name_preference
 from memory.layers import MemoryLayers, normalize_memory_category
 from memory.preference import preference_ack
 from memory.repository import MemoryRepository
+from memory.extractor import looks_like_secret, redact_secrets
+from memory.retrieval import HybridRetriever
 from security.permissions import PermissionLevel
 from tools.base import BaseTool, ToolResult
 
@@ -20,11 +22,12 @@ class MemorySearchTool(BaseTool):
 
     def __init__(self, repo: MemoryRepository) -> None:
         self._repo = repo
+        self._retriever = HybridRetriever(repo)
 
     def run(self, arguments: dict[str, Any]) -> ToolResult:
         query = str(arguments.get("query") or "").strip()
         limit = int(arguments.get("limit") or 5)
-        hits = self._repo.search_semantic(query, limit=limit)
+        hits = self._retriever.retrieve(query, limit=limit)
         if not hits:
             hits = self._repo.search(query, limit=limit)
         if not hits:
@@ -47,7 +50,10 @@ class MemorySaveTool(BaseTool):
         self._repo = repo
 
     def run(self, arguments: dict[str, Any]) -> ToolResult:
-        content = str(arguments.get("content") or "").strip()
+        raw_content = str(arguments.get("content") or "").strip()
+        if looks_like_secret(raw_content):
+            return ToolResult(ok=False, error="Refusing to store a credential or secret.")
+        content = redact_secrets(raw_content).strip()
         key = arguments.get("key")
         category = normalize_memory_category(
             str(arguments.get("category") or "fact")
@@ -175,6 +181,26 @@ class MemoryForgetTool(BaseTool):
         memory_id = int(mid) if mid is not None and str(mid).isdigit() else None
         count, speech = self._layers.forget(query, memory_id=memory_id, last_n=1)
         return ToolResult(ok=True, data=speech)
+
+
+class MemoryTemporalRecallTool(BaseTool):
+    name = "memory.temporal_recall"
+    description = "Recall episodic memories from a time window (yesterday, today, last week)"
+    permission_level = PermissionLevel.READ
+    input_schema = {"query": {"type": "str", "required": True}}
+
+    def __init__(self, layers: MemoryLayers, *, language: str = "en-GB") -> None:
+        self._layers = layers
+        self._language = language
+
+    def run(self, arguments: dict[str, Any]) -> ToolResult:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return ToolResult(ok=False, error="Query required")
+        return ToolResult(
+            ok=True,
+            data=self._layers.temporal_speech(query, language=self._language),
+        )
 
 
 class MemorySessionCaptureTool(BaseTool):

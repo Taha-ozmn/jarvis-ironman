@@ -316,6 +316,26 @@
       gap: 1rem;
       align-items: stretch;
     }
+    .mobile-link {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-width: 220px;
+      max-width: 320px;
+      padding: 0.45rem 0.75rem;
+      font-size: 0.68rem;
+      letter-spacing: 0.06em;
+      border-left: 1px solid rgba(0, 212, 255, 0.2);
+    }
+    .mobile-link-label { opacity: 0.55; margin-bottom: 0.25rem; }
+    .mobile-link a {
+      color: var(--green);
+      text-decoration: none;
+      font-family: var(--font-hud);
+      font-size: 0.62rem;
+      word-break: break-all;
+    }
+    .mobile-link a:hover { text-decoration: underline; }
     .chat-log {
       flex: 1;
       max-height: 140px;
@@ -496,8 +516,210 @@
       .side-panel { display: none; }
     }
   </style>
+
+  <style id="cinematic-3d">
+    /* ============ Cinematic 3D enhancement layer ============ */
+    :root {
+      --glass-brd: rgba(0, 212, 255, 0.22);
+      --bloom: 0 0 26px rgba(0, 212, 255, 0.35);
+    }
+
+    body {
+      background:
+        radial-gradient(125% 100% at 50% -14%, #041020 0%, #020910 42%, #01050b 72%, #000205 100%);
+      perspective: 1600px;
+    }
+
+    /* Depth haze + drifting aurora — restrained so the black theme stays deep */
+    .aurora {
+      position: fixed; inset: -25%;
+      background:
+        radial-gradient(36% 46% at 20% 26%, rgba(0, 140, 255, 0.09), transparent 60%),
+        radial-gradient(42% 52% at 82% 16%, rgba(0, 235, 200, 0.055), transparent 60%),
+        radial-gradient(50% 58% at 62% 94%, rgba(70, 30, 220, 0.06), transparent 60%);
+      filter: blur(38px);
+      animation: aurora-drift 20s ease-in-out infinite alternate;
+      pointer-events: none;
+      z-index: 1;
+    }
+    @keyframes aurora-drift {
+      0%   { transform: translate3d(-2%, -1%, 0) scale(1.05); }
+      100% { transform: translate3d(3%, 2%, 0) scale(1.14); }
+    }
+
+    /* Parallax starfield */
+    .stars {
+      position: fixed; inset: 0; pointer-events: none; z-index: 1;
+      background-image:
+        radial-gradient(1px 1px at 18% 32%, rgba(190, 235, 255, 0.9), transparent),
+        radial-gradient(1px 1px at 72% 58%, rgba(180, 225, 255, 0.7), transparent),
+        radial-gradient(1.5px 1.5px at 42% 82%, rgba(150, 215, 255, 0.85), transparent),
+        radial-gradient(1px 1px at 86% 24%, rgba(205, 240, 255, 0.7), transparent),
+        radial-gradient(1px 1px at 12% 68%, rgba(165, 220, 255, 0.6), transparent),
+        radial-gradient(1.5px 1.5px at 55% 12%, rgba(200, 240, 255, 0.7), transparent);
+      animation: twinkle 6.5s ease-in-out infinite alternate;
+    }
+    @keyframes twinkle { from { opacity: 0.35; } to { opacity: 0.9; } }
+
+    .grid-bg {
+      background-size: 46px 46px;
+      mask-image: radial-gradient(circle at 50% 42%, #000 52%, transparent 92%);
+      -webkit-mask-image: radial-gradient(circle at 50% 42%, #000 52%, transparent 92%);
+    }
+
+    /* HUD depth stack — pin footer inside the viewport so nothing is clipped */
+    .hud {
+      transform-style: preserve-3d;
+      height: 100vh;
+      min-height: 100vh;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 0.8rem;
+    }
+    .center { min-height: 0; overflow: hidden; padding: 0.5rem; }
+    .top-bar { transform: translateZ(16px); }
+    .bottom-bar { transform: none; }
+
+    /* Glass panels — darker + crisper for a sharp, high-contrast black theme */
+    .panel, .top-bar {
+      background: linear-gradient(160deg, rgba(6, 15, 28, 0.80), rgba(1, 5, 11, 0.74));
+      border: 1px solid rgba(0, 200, 255, 0.30);
+      backdrop-filter: blur(8px) saturate(125%);
+      -webkit-backdrop-filter: blur(8px) saturate(125%);
+      border-radius: 12px;
+      box-shadow:
+        0 18px 42px rgba(0, 0, 0, 0.6),
+        inset 0 1px 0 rgba(120, 210, 255, 0.12),
+        inset 0 0 26px rgba(0, 0, 0, 0.35);
+    }
+    .panel::before { width: 28px; height: 28px; }
+    .panel::after {
+      content: ''; position: absolute; right: 0; bottom: 0;
+      width: 28px; height: 28px;
+      border-bottom: 2px solid var(--cyan);
+      border-right: 2px solid var(--cyan);
+      opacity: 0.5;
+    }
+    .side-panel { transition: box-shadow 0.35s ease, transform 0.35s ease; }
+    .side-panel:hover {
+      box-shadow: 0 24px 52px rgba(0, 0, 0, 0.5), var(--bloom);
+      transform: translateZ(6px);
+    }
+
+    /* ===== 3D Arc Reactor ===== */
+    .reactor-wrap {
+      perspective: 1000px;
+      transform-style: preserve-3d;
+      margin: 0.8rem 0;
+      transition: transform 0.15s ease-out;
+      will-change: transform;
+    }
+    .reactor {
+      transform: rotateX(16deg);
+      transform-style: preserve-3d;
+      background: radial-gradient(circle at 50% 40%, #0a2f52 0%, #06233f 46%, #041526 76%, #020c17 100%);
+      box-shadow:
+        0 0 60px rgba(0, 180, 255, 0.35),
+        0 30px 60px rgba(0, 0, 0, 0.6),
+        inset 0 0 50px rgba(0, 150, 255, 0.20);
+      animation: reactor-bob 6s ease-in-out infinite;
+    }
+    @keyframes reactor-bob {
+      0%, 100% { transform: rotateX(16deg) translateY(0); }
+      50%      { transform: rotateX(16deg) translateY(-9px); }
+    }
+    .reactor::after {
+      content: ''; position: absolute; inset: 14px;
+      border-radius: 50%;
+      background: conic-gradient(from 0deg, transparent 0 68%, rgba(0, 220, 255, 0.28) 86%, transparent 100%);
+      animation: spin 4.5s linear infinite;
+      transform: translateZ(4px);
+      pointer-events: none;
+    }
+    .reactor-core {
+      width: 62px; height: 62px;
+      background: radial-gradient(circle at 45% 40%, #ffffff 0%, #baf0ff 30%, var(--cyan) 60%, #0066aa 100%);
+      box-shadow: 0 0 40px var(--cyan), 0 0 92px rgba(0, 180, 255, 0.55);
+      transform: translateZ(26px);
+      animation: core-pulse 2.6s ease-in-out infinite;
+    }
+    @keyframes core-pulse {
+      0%, 100% { box-shadow: 0 0 40px var(--cyan), 0 0 92px rgba(0, 180, 255, 0.5); }
+      50%      { box-shadow: 0 0 56px var(--cyan), 0 0 132px rgba(0, 220, 255, 0.78); }
+    }
+    .ring {
+      top: 50%; left: 50%;
+      border-width: 1.5px;
+      border-style: solid;
+      border-color: rgba(0, 200, 255, 0.30);
+      border-top-color: rgba(0, 240, 255, 0.9);
+      transform-style: preserve-3d;
+    }
+    .ring-1 {
+      width: 128px; height: 128px; margin: -64px 0 0 -64px;
+      animation: orbit-a 7s linear infinite;
+    }
+    .ring-2 {
+      width: 160px; height: 160px; margin: -80px 0 0 -80px;
+      border-top-color: transparent;
+      border-left-color: rgba(0, 240, 255, 0.85);
+      animation: orbit-b 11s linear infinite;
+    }
+    @keyframes orbit-a {
+      from { transform: rotateX(72deg) rotateZ(0deg); }
+      to   { transform: rotateX(72deg) rotateZ(360deg); }
+    }
+    @keyframes orbit-b {
+      from { transform: rotateY(74deg) rotateZ(0deg); }
+      to   { transform: rotateY(74deg) rotateZ(-360deg); }
+    }
+    .reactor.listening {
+      box-shadow: 0 0 62px rgba(0, 255, 150, 0.42), 0 30px 60px rgba(0, 0, 0, 0.6), inset 0 0 50px rgba(0, 255, 150, 0.18);
+    }
+    .reactor.thinking, .reactor.working {
+      box-shadow: 0 0 62px rgba(255, 180, 0, 0.42), 0 30px 60px rgba(0, 0, 0, 0.6), inset 0 0 50px rgba(255, 170, 0, 0.16);
+    }
+    .reactor.speaking {
+      box-shadow: 0 0 62px rgba(0, 212, 255, 0.45), 0 30px 60px rgba(0, 0, 0, 0.6), inset 0 0 50px rgba(0, 160, 255, 0.2);
+    }
+    .reactor.error {
+      box-shadow: 0 0 62px rgba(255, 60, 80, 0.5), 0 30px 60px rgba(0, 0, 0, 0.6);
+    }
+
+    /* Glowing typography */
+    .top-center { text-shadow: 0 0 24px var(--cyan), 0 0 60px rgba(0, 180, 255, 0.5); }
+    .status-label { text-shadow: 0 0 18px rgba(0, 212, 255, 0.5); }
+    .status-detail { text-shadow: 0 0 12px rgba(120, 210, 255, 0.35); }
+    .viz-bar {
+      box-shadow: 0 0 10px var(--cyan);
+      background: linear-gradient(to top, #0088cc, #7ff0ff);
+    }
+
+    /* Boot overlay depth */
+    .boot-overlay { background: radial-gradient(ellipse at center, #08203a 0%, #030c18 70%, #01060d 100%); }
+    .boot-title { text-shadow: 0 0 40px var(--cyan), 0 0 84px rgba(0, 180, 255, 0.6); }
+
+    /* Phone QR */
+    .mobile-link { align-items: flex-start; }
+    .mobile-qr {
+      width: 128px; height: 128px; margin-top: 0.55rem;
+      border-radius: 10px; padding: 6px;
+      background: #e8f6ff;
+      box-shadow: 0 0 0 1px var(--glass-brd), 0 10px 26px rgba(0, 0, 0, 0.5), var(--bloom);
+    }
+
+    @media (max-width: 900px) {
+      .reactor { transform: rotateX(10deg); }
+      .top-bar, .bottom-bar { transform: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .aurora, .stars, .reactor, .reactor::after, .reactor-core,
+      .ring-1, .ring-2 { animation: none !important; }
+    }
+  </style>
 </head>
 <body>
+  <div class="aurora"></div>
+  <div class="stars"></div>
   <div class="grid-bg"></div>
   <div class="scanlines"></div>
   <div class="perm-toast" id="perm-toast"></div>
@@ -591,6 +813,11 @@
     </aside>
 
     <footer class="bottom-bar panel">
+      <div class="mobile-link" id="mobile-link" hidden>
+        <div class="mobile-link-label">📱 iPHONE (SAME WI‑FI)</div>
+        <a id="mobile-url" href="/connect" target="_blank" rel="noopener">Loading phone link…</a>
+        <img id="mobile-qr" class="mobile-qr" alt="Scan to pair iPhone" hidden />
+      </div>
       <div class="chat-log" id="chat-log"></div>
       <div class="text-row">
         <input id="text-input" placeholder="Command input…" />
@@ -797,7 +1024,11 @@
       );
       const settings = data.settings || {};
       const diag = data.diagnostics || {};
+      const brain = data.brain || {};
       document.getElementById('pane-settings').innerHTML =
+        `<div class="cc-item">neural core: ${brain.ready ? 'ONLINE' : (brain.degraded ? 'DEGRADED' : 'CONNECTING')}</div>` +
+        `<div class="cc-item">autonomy profile: ${data.autonomy_profile || 'safe'}</div>` +
+        `<div class="cc-item">full autonomy: ${settings.full_autonomy ? 'ON' : 'OFF'}</div>` +
         `<div class="cc-item">max permission: L${settings.max_permission_level ?? '—'}</div>` +
         `<div class="cc-item">automation: ${settings.automation ? 'ON' : 'OFF'}</div>` +
         `<div class="cc-item">proactive: ${settings.proactive ? 'ON' : 'OFF'}</div>` +
@@ -846,6 +1077,7 @@
       updateMicUI();
       if (paused) {
         setStatus('idle', 'Mic paused — say "listen again" or press LISTEN');
+        if (!processing && !listenGateBlocked) startResumeProbe();
       } else if (!processing) {
         setStatus('idle', 'Standing by — speak your command');
       }
@@ -860,14 +1092,19 @@
       try { recognition.stop(); } catch (_) {}
     }
 
-    function startRecognitionIfAllowed() {
-      if (!recognition || processing || listenGateBlocked || !bootComplete || userMicPaused) return;
+    function startRecognitionIfAllowed(resumeProbe = false) {
+      if (!recognition || processing || listenGateBlocked || !bootComplete) return;
+      if (userMicPaused && !resumeProbe) return;
       recognitionBusy = false;
       try { recognition.start(); } catch (_) {
         setTimeout(() => {
           try { recognition.start(); } catch (_) {}
         }, 400);
       }
+    }
+
+    function startResumeProbe() {
+      startRecognitionIfAllowed(true);
     }
 
     function applyListenGate(blocked) {
@@ -879,6 +1116,10 @@
       } else if (!userMicPaused) {
         setProcessing(false);
         startRecognitionIfAllowed();
+      } else {
+        // Keep a lightweight recognition loop alive so "beni dinle" can
+        // reactivate the microphone after a long muted period.
+        startResumeProbe();
       }
       updateMicUI();
     }
@@ -917,14 +1158,15 @@
       const raw = (text || '').trim();
       if (!raw || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-      if (fromVoice && (listenGateBlocked || (processing && hardMuteDuringSpeak()))) {
+      const listenControl = isResumeListenCommand(raw) || isPauseListenCommand(raw);
+      if (fromVoice && (listenGateBlocked || (processing && hardMuteDuringSpeak())) && !listenControl) {
         return;
       }
 
       if (fromVoice && userMicPaused) {
         if (isResumeListenCommand(raw)) {
           addChat('you', stripWakeWord(raw) || raw);
-          ws.send(JSON.stringify({ type: 'command', text: stripWakeWord(raw) || raw }));
+          ws.send(JSON.stringify({ type: 'command', text: stripWakeWord(raw) || raw, source: 'voice' }));
         }
         return;
       }
@@ -933,7 +1175,7 @@
         const command = stripWakeWord(raw) || raw;
         setUserMicPaused(true, { notifyServer: false });
         addChat('you', command);
-        ws.send(JSON.stringify({ type: 'command', text: command }));
+        ws.send(JSON.stringify({ type: 'command', text: command, source: 'voice' }));
         return;
       }
 
@@ -947,7 +1189,7 @@
       addChat('you', command);
       if (hardMuteDuringSpeak()) stopRecognition();
       clearUtteranceBuffer();
-      ws.send(JSON.stringify({ type: 'command', text: command }));
+      ws.send(JSON.stringify({ type: 'command', text: command, source: fromVoice ? 'voice' : 'text' }));
     }
 
     function setProcessing(active) {
@@ -958,10 +1200,11 @@
       else if (!active && !userMicPaused && !listenGateBlocked) startRecognitionIfAllowed();
     }
 
-    function setStatus(status, detail) {
+    function setStatus(status, detail, extra) {
       reactor.className = 'reactor ' + (status || 'idle');
       statusLabel.textContent = statusMap[status] || (status || '').toUpperCase();
-      statusDetail.textContent = detail || '';
+      const trace = extra && extra.thinking_trace ? extra.thinking_trace : '';
+      statusDetail.textContent = trace || detail || '';
       if (status === 'thinking' || status === 'speaking' || status === 'working') setProcessing(true);
       if (status === 'idle' || status === 'listening') {
         // Server releases listen_gate after real TTS; idle is a safety net
@@ -998,6 +1241,8 @@
         recognitionBusy = false;
         if (!processing && !listenGateBlocked && !userMicPaused) {
           setTimeout(startListening, 300);
+        } else if (!processing && !listenGateBlocked && userMicPaused) {
+          setTimeout(startResumeProbe, 500);
         }
       };
       recognition.onerror = (e) => {
@@ -1107,7 +1352,7 @@
           narrationFeed.classList.add('visible');
           addChat('narrate', data.text);
         }
-        if (data.type === 'status' || data.status) setStatus(data.status, data.detail);
+        if (data.type === 'status' || data.status) setStatus(data.status, data.detail, data);
         if (data.type === 'response') {
           addChat('jarvis', data.response);
           setStatus('speaking', data.response);
@@ -1149,8 +1394,58 @@
 
     updateMicUI();
 
+    function refreshMobileLink() {
+      fetch('/api/connect')
+        .then((r) => r.json())
+        .then((data) => {
+          if (!data.ok || !data.mobile_url) return;
+          const box = document.getElementById('mobile-link');
+          const link = document.getElementById('mobile-url');
+          if (!box || !link) return;
+          link.href = data.connect_url || data.mobile_url;
+          link.textContent = data.mobile_url;
+          box.hidden = !data.phone_reachable;
+          const qr = document.getElementById('mobile-qr');
+          if (qr) {
+            if (data.phone_reachable) {
+              // Token is stable across restarts, so the QR only needs one load.
+              if (!qr.getAttribute('src')) qr.src = '/api/qr.svg';
+              qr.hidden = false;
+            } else {
+              qr.hidden = true;
+            }
+          }
+        })
+        .catch(() => {});
+    }
+    refreshMobileLink();
+    setInterval(refreshMobileLink, 30000);
+
     connect();
     setTimeout(() => { if (!bootComplete) finishBoot(); }, 15000);
+  </script>
+
+  <script>
+    // Pointer parallax on the arc reactor for a subtle cinematic 3D depth.
+    (function () {
+      const wrap = document.querySelector('.reactor-wrap');
+      if (!wrap) return;
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      let raf = null, tx = 0, ty = 0;
+      function apply() {
+        raf = null;
+        wrap.style.transform = `rotateY(${tx * 10}deg) rotateX(${-ty * 8}deg)`;
+      }
+      window.addEventListener('pointermove', (e) => {
+        const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+        tx = Math.max(-1, Math.min(1, (e.clientX - cx) / cx));
+        ty = Math.max(-1, Math.min(1, (e.clientY - cy) / cy));
+        if (!raf) raf = requestAnimationFrame(apply);
+      }, { passive: true });
+      window.addEventListener('pointerleave', () => {
+        tx = 0; ty = 0; if (!raf) raf = requestAnimationFrame(apply);
+      });
+    })();
   </script>
 </body>
 </html>

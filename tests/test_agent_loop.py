@@ -13,14 +13,14 @@ from voice.narrator import JarvisNarrator
 class AgentLoopTests(unittest.TestCase):
     def test_empty_goal(self) -> None:
         os_core = MagicMock()
-        self.assertIn("boş", run_agent_loop(os_core, "  "))
+        self.assertIn("empty", run_agent_loop(os_core, "  ").lower())
 
     def test_no_steps_honest(self) -> None:
         os_core = MagicMock()
         os_core.planner.create.return_value = Plan(goal="x", steps=[])
         os_core.deep_max_iterations = 3
         msg = run_agent_loop(os_core, "selam")
-        self.assertIn("tek adımlık", msg)
+        self.assertIn("one-step", msg)
 
     def test_retries_then_stops(self) -> None:
         os_core = MagicMock()
@@ -76,8 +76,8 @@ class PermissionsSpeechTests(unittest.TestCase):
                 ],
             }
         )
-        self.assertIn("EKSİK", msg)
-        self.assertIn("Ekran Kaydı", msg)
+        self.assertIn("MISSING", msg)
+        self.assertIn("Screen Recording", msg)
         self.assertIn("Terminal", msg)
 
 

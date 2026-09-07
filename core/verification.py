@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,8 +63,22 @@ def claim_safe_speech(result: ToolResult, *, fallback_fail: str = "Could not ver
     """Speak only verified success data; never invent success from a failed tool."""
     if result.ok and isinstance(result.data, str) and result.data.strip():
         return result.data.strip()
+    if result.ok and result.data is not None:
+        if isinstance(result.data, dict) and "items" in result.data:
+            path = str(result.data.get("path") or "directory")
+            items = result.data.get("items") or []
+            names = [
+                str(item.get("name") or item)
+                for item in items[:40]
+                if isinstance(item, dict)
+            ]
+            return f"Contents of {path}: " + (", ".join(names) or "empty")
+        try:
+            return json.dumps(result.data, ensure_ascii=False, default=str)[:800]
+        except (TypeError, ValueError):
+            return str(result.data)[:800]
     if result.ok:
-        return "Done."
+        return "The operation completed, but it returned no report."
     err = (result.error or "").strip() or fallback_fail
     return err
 

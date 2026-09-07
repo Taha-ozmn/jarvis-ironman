@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import re
+import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
 from typing import Callable, Optional
 
 from cursor_sdk import (
     Agent,
+    AgentBusyError,
     Cursor,
     CursorAgentError,
     LocalAgentOptions,
@@ -22,10 +25,14 @@ from brain.conversation import ConversationMemory
 from brain.sdk_patch import apply_sdk_patch
 from brain.model_router import ACTION_WORDS, ModelRouter
 from brain.task_router import classify_complexity, task_timeout, work_update_delays
+from core.latency_stats import LatencyStats
+from core.mode_selector import mode_hint, select_mode
+from core.timeout_responses import TimeoutResponses
 from voice.narrator import JarvisNarrator
 from brain.nvidia_llm_provider import NVIDIAProvider
 
 apply_sdk_patch()
+logger = logging.getLogger(__name__)
 
 JARVIS_IRON_MAN = """You are J.A.R.V.I.S. — Just A Rather Very Intelligent System — Tony Stark's personal AI from the Iron Man films.
 
@@ -113,6 +120,7 @@ class JarvisBrain:
         user_name: str = "",
         formal_address: bool = False,
         language: str = "tr-TR",
+        reply_language: str | None = None,
         full_access: bool = True,
         sandbox: bool = False,
         auto_review: bool = False,
@@ -122,7 +130,15 @@ class JarvisBrain:
         think_timeout: float = 90.0,
         complex_timeout: float = 600.0,
         deep_timeout: float = 1200.0,
+        start_timeout_sec: float = 15.0,
+        soft_timeout_sec: float = 5.0,
+        hard_timeout_sec: float = 0.0,
         background_on_timeout: bool = True,
+        ask_on_timeout: bool = False,
+        auto_retry_count: int = 0,
+        progress_interval_sec: float = 5.0,
+        max_progress_updates: int = 3,
+        latency_stats_path: str | Path | None = None,
         narrate: bool = True,
         work_updates: bool = True,
         persona: str = "iron_man",
@@ -139,7 +155,10 @@ class JarvisBrain:
         self.user_name = user_name.strip()
         self.formal_address = formal_address
         self.language = language
-        self.reply_language = "tr" if str(language).lower().startswith("tr") else "en"
+        if reply_language:
+            self.reply_language = reply_language
+        else:
+            self.reply_language = "tr" if str(language).lower().startswith("tr") else "en"
         self.address = "efendim" if self.reply_language == "tr" else (self.user_name or "sir")
         self.full_access = full_access
         self.sandbox = sandbox
@@ -150,8 +169,27 @@ class JarvisBrain:
         self.think_timeout = think_timeout
         self.complex_timeout = complex_timeout
         self.deep_timeout = deep_timeout
+        self.start_timeout_sec = max(1.0, float(start_timeout_sec))
+        self.soft_timeout_sec = max(0.5, float(soft_timeout_sec))
+        self.hard_timeout_sec = max(0.0, float(hard_timeout_sec))
         self.background_on_timeout = background_on_timeout
+        self.ask_on_timeout = ask_on_timeout
+        self.auto_retry_count = max(0, int(auto_retry_count))
+        self.progress_interval_sec = max(1.0, float(progress_interval_sec))
+        self.max_progress_updates = max(0, int(max_progress_updates))
         self.narrate = narrate
+        stats_path = latency_stats_path or Path("data/latency_stats.json")
+        self._latency_stats = LatencyStats(stats_path)
+        self._timeout_responses = TimeoutResponses(
+            user_name=self.user_name or "Taha",
+            use_name=not formal_address,
+        )
+        self._last_command = ""
+        self._last_complexity = "simple"
+        self._active_run = None
+        self._cancel_event: threading.Event | None = None
+        self._active_task_lock = threading.Lock()
+        self._active_task = ""
         self.work_updates = work_updates
         self.persona = persona
         self.fast_mode = False
@@ -189,6 +227,8 @@ class JarvisBrain:
         self._persona_pending = True
         self._available_models: set[str] = set()
         self._ready = threading.Event()
+        self._start_failed = threading.Event()
+        self._start_error = ""
         self._start_lock = threading.Lock()
         self._starting = False
         self._long_term_recall: Optional[Callable[[str], str]] = None
@@ -206,17 +246,34 @@ class JarvisBrain:
     def ensure_started(self, timeout: float = 120.0) -> None:
         if self.is_ready():
             return
+        if self._start_failed.is_set():
+            return
+        started_here = False
         with self._start_lock:
             if not self.is_ready() and not self._starting:
                 self._starting = True
+                started_here = True
                 threading.Thread(target=self._start_safe, daemon=True).start()
-        if not self._ready.wait(timeout=timeout):
-            raise RuntimeError("Neural core failed to start in time.")
+        # Another request is already bringing the brain online. Do not make
+        # the current voice turn wait a second time; local tools remain live.
+        if not started_here:
+            return
+        deadline = time.monotonic() + max(0.1, float(timeout))
+        while not self._ready.is_set() and not self._start_failed.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.05, remaining))
+        if not self._ready.is_set() and not self._start_failed.is_set():
+            self._start_error = "startup timeout"
+            self._start_failed.set()
 
     def _start_safe(self) -> None:
         try:
             self.start()
         except Exception as err:
+            self._start_error = str(err)[:240]
+            self._start_failed.set()
             print(f"⚠️  Brain start error: {err}")
         finally:
             self._starting = False
@@ -248,6 +305,8 @@ class JarvisBrain:
         with self._start_lock:
             if self._ready.is_set():
                 return
+            self._start_failed.clear()
+            self._start_error = ""
 
             # Initialize the appropriate LLM provider based on configuration
             if self.llm_provider == 'nvidia':
@@ -306,6 +365,26 @@ class JarvisBrain:
                 if last_err:
                     raise last_err
 
+    @property
+    def degraded(self) -> bool:
+        """True when local tools work but the remote coding brain is offline."""
+        return self._start_failed.is_set() and not self._ready.is_set()
+
+    @property
+    def start_error(self) -> str:
+        return self._start_error
+
+    def reconnect(self) -> bool:
+        """Clear degraded state and attempt one controlled reconnection."""
+        self._start_failed.clear()
+        self._start_error = ""
+        try:
+            self.start()
+        except Exception as err:
+            self._start_error = str(err)[:240]
+            self._start_failed.set()
+        return self.is_ready()
+
     def _resolve_model(self, preferred: str) -> str:
         if not preferred:
             preferred = self.model
@@ -352,7 +431,11 @@ class JarvisBrain:
     @staticmethod
     def is_action(command: str) -> bool:
         lower = command.lower()
-        return any(w in lower for w in ACTION_WORDS)
+        return any(
+            re.search(rf"(?<!\w){re.escape(word.strip())}(?!\w)", lower)
+            for word in ACTION_WORDS
+            if word.strip()
+        )
 
     def _resolve_timeout(self, command: str) -> tuple[float, str]:
         level = classify_complexity(command)
@@ -364,6 +447,109 @@ class JarvisBrain:
         )
         return timeout, level
 
+    def _effective_soft_timeout(self, command: str) -> float:
+        base = max(0.5, float(self.soft_timeout_sec))
+        # Simple commands must remain responsive. A historic slow sample must
+        # not turn a simple utterance into a one-second-or-longer wait.
+        if classify_complexity(command) == "simple":
+            return base
+        return self._latency_stats.suggest_soft_timeout(command, base)
+
+    def _effective_hard_timeout(self, command: str, task_timeout_sec: float) -> float:
+        if self.hard_timeout_sec > 0:
+            return float(self.hard_timeout_sec)
+        return float(task_timeout_sec)
+
+    def _soft_timeout_message(self, command: str = "") -> str:
+        return self._timeout_responses.soft(
+            command or self._last_command,
+            level=self._last_complexity,
+        )
+
+    def _timeout_fail_message(self, command: str = "") -> str:
+        return self._timeout_responses.fail(
+            command or self._last_command,
+            level=self._last_complexity,
+            ask_retry=self.ask_on_timeout,
+        )
+
+    def _background_timeout_message(self, command: str = "") -> str:
+        return self._timeout_responses.background(
+            command or self._last_command,
+            level=self._last_complexity,
+        )
+
+    def _active_run_retry_message(self) -> str:
+        return self._timeout_responses.active_run_retry()
+
+    @staticmethod
+    def _is_active_run_error(err: Exception) -> bool:
+        if isinstance(err, AgentBusyError):
+            return True
+        msg = str(getattr(err, "message", err)).lower()
+        return "already has active run" in msg
+
+    def _cancel_tracked_run(self) -> None:
+        run = self._active_run
+        self._active_run = None
+        if run is None:
+            return
+        try:
+            if hasattr(run, "supports") and run.supports("cancel"):
+                run.cancel()
+            elif hasattr(run, "cancel"):
+                run.cancel()
+        except Exception:
+            pass
+
+    def _interrupt_inflight(self) -> None:
+        """Cancel the current thought so barge-in can resume listening."""
+        cancel = self._cancel_event
+        if cancel is not None:
+            cancel.set()
+        self._cancel_tracked_run()
+
+    def _clear_agent_active_runs(self) -> None:
+        self._cancel_tracked_run()
+        agent = self._agent
+        if agent is None:
+            return
+        agent_id = getattr(agent, "agent_id", None)
+        if not agent_id:
+            return
+        try:
+            Cursor.agents.cancel_runs(agent_id=agent_id, api_key=self.api_key)
+        except Exception:
+            pass
+
+    def _send_with_active_run_recovery(
+        self,
+        prompt: str,
+        send_opts: SendOptions | None,
+        *,
+        speak: Callable[[str], None],
+    ):
+        try:
+            run = (
+                self._agent.send(prompt, options=send_opts)
+                if send_opts
+                else self._agent.send(prompt)
+            )
+            self._active_run = run
+            return run
+        except (AgentBusyError, CursorAgentError) as err:
+            if not self._is_active_run_error(err):
+                raise
+            speak(self._active_run_retry_message())
+            self._clear_agent_active_runs()
+            run = (
+                self._agent.send(prompt, options=send_opts)
+                if send_opts
+                else self._agent.send(prompt)
+            )
+            self._active_run = run
+            return run
+
     def think_with_narration(
         self,
         user_message: str,
@@ -371,59 +557,160 @@ class JarvisBrain:
         work_update: Callable[[int], str] | None = None,
         on_complete: Optional[Callable[[str], None]] = None,
     ) -> str:
-        self.ensure_started()
+        normalized_command = " ".join((user_message or "").lower().split())
+        with self._active_task_lock:
+            if normalized_command and normalized_command == self._active_task:
+                msg = "That task is already running; I will report the verified result once."
+                speak(msg)
+                return msg
+            self._active_task = normalized_command
+        self.ensure_started(timeout=self.start_timeout_sec)
         if self._agent is None and self._nvidia_provider is None:
-            raise RuntimeError("Brain not started.")
+            msg = (
+                "The deep coding brain is offline. "
+                "Local tools remain available, and no action was claimed."
+            )
+            speak(msg)
+            with self._active_task_lock:
+                self._active_task = ""
+            return msg
 
         if self.on_thinking:
             self.on_thinking(user_message)
 
+        self._last_command = user_message
         timeout, level = self._resolve_timeout(user_message)
+        self._last_complexity = level
+        soft = self._effective_soft_timeout(user_message)
+        hard = self._effective_hard_timeout(user_message, timeout)
+        hard = max(hard, soft)
+
         timers: list[threading.Timer] = []
         executor = ThreadPoolExecutor(max_workers=1)
         background = False
+        cancel = threading.Event()
+        self._cancel_event = cancel
+        started = time.monotonic()
+        soft_spoken = False
+
+        def _progress_update(idx: int) -> None:
+            if cancel.is_set():
+                return
+            if work_update:
+                line = work_update(idx)
+            else:
+                line = self._timeout_responses.progress(user_message, idx)
+            speak(line)
+
         try:
-            if self.narrate and self.work_updates and work_update:
-                for i, delay in enumerate(
-                    work_update_delays(level, fast=self.fast_mode),
-                ):
-                    t = threading.Timer(delay, lambda idx=i: speak(work_update(idx)))
+            if self.narrate and self.work_updates:
+                delays = work_update_delays(
+                    level,
+                    fast=self.fast_mode,
+                    interval_sec=self.progress_interval_sec,
+                    max_pings=self.max_progress_updates,
+                )
+                for i, delay in enumerate(delays):
+                    t = threading.Timer(delay, lambda idx=i: _progress_update(idx))
                     t.daemon = True
                     t.start()
                     timers.append(t)
 
             future = executor.submit(
-                self._execute_think, user_message, speak, level,
+                self._execute_think, user_message, speak, level, cancel,
             )
-            try:
-                result = future.result(timeout=timeout)
-                executor.shutdown(wait=False)
-                return result
-            except FuturesTimeout:
-                if level in ("complex", "deep") and self.background_on_timeout:
-                    msg = (
-                        "This is a substantial directive — "
-                        "I'll continue working until it's complete, sir."
-                    )
-                    speak(msg)
-                    background = True
-                    self._continue_in_background(
-                        future, executor, speak, on_complete, timers,
-                    )
-                    return msg
-                msg = "That took longer than expected — shall I keep trying, sir?"
-                speak(msg)
-                executor.shutdown(wait=False, cancel_futures=True)
-                return msg
+
+            while True:
+                elapsed = time.monotonic() - started
+                if not soft_spoken:
+                    wait = max(0.05, soft - elapsed)
+                else:
+                    wait = max(0.05, hard - elapsed)
+
+                try:
+                    result = future.result(timeout=wait)
+                    executor.shutdown(wait=False)
+                    self._record_latency(user_message, time.monotonic() - started, True)
+                    return result
+                except FuturesTimeout:
+                    elapsed = time.monotonic() - started
+
+                    if not soft_spoken and elapsed >= soft:
+                        speak(self._soft_timeout_message(user_message))
+                        soft_spoken = True
+                        continue
+
+                    if (
+                        level in ("complex", "deep")
+                        and self.background_on_timeout
+                        and elapsed >= timeout
+                    ):
+                        msg = self._background_timeout_message(user_message)
+                        speak(msg)
+                        background = True
+                        self._continue_in_background(
+                            future,
+                            executor,
+                            speak,
+                            on_complete,
+                            timers,
+                            cancel,
+                            normalized_command,
+                        )
+                        return msg
+
+                    if elapsed >= hard:
+                        cancel.set()
+                        self._cancel_tracked_run()
+                        msg = self._timeout_fail_message(user_message)
+                        speak(msg)
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        self._record_latency(user_message, elapsed, False)
+                        return msg
+
+                    if soft_spoken:
+                        continue
+
         except CursorAgentError as err:
-            msg = f"Cursor connection issue ({err.message}). Is Cursor open?"
+            msg = self._timeout_responses.connection_error(
+                str(getattr(err, "message", err))[:80],
+            )
             speak(msg)
             executor.shutdown(wait=False, cancel_futures=True)
+            self._record_latency(user_message, time.monotonic() - started, False)
+            return msg
+        except Exception as err:
+            # A future exception otherwise bubbles into main.py's generic
+            # apology, hiding whether the failure is SDK, network, or run state.
+            logger.exception("DeepBrain execution failed: %s", type(err).__name__)
+            self._cancel_tracked_run()
+            executor.shutdown(wait=False, cancel_futures=True)
+            self._record_latency(user_message, time.monotonic() - started, False)
+            msg = (
+                "The reasoning core encountered an internal error. "
+                "Local commands remain available."
+            )
+            speak(msg)
             return msg
         finally:
+            self._cancel_event = None
             if not background:
                 for t in timers:
                     t.cancel()
+                with self._active_task_lock:
+                    if self._active_task == normalized_command:
+                        self._active_task = ""
+
+    def _record_latency(self, command: str, seconds: float, success: bool) -> None:
+        try:
+            self._latency_stats.record(
+                command,
+                "cursor",
+                seconds * 1000.0,
+                success,
+            )
+        except Exception:
+            pass
 
     def _continue_in_background(
         self,
@@ -432,20 +719,29 @@ class JarvisBrain:
         speak: Callable[[str], None],
         on_complete: Optional[Callable[[str], None]],
         timers: list[threading.Timer],
+        cancel: threading.Event | None = None,
+        normalized_command: str = "",
     ) -> None:
         def _wait() -> None:
             try:
                 result = future.result()
+                if cancel is not None and cancel.is_set():
+                    return
                 if on_complete:
                     on_complete(result)
                 elif result:
                     speak(result)
             except Exception:
-                speak("I encountered a fault completing that directive, sir.")
+                if cancel is None or not cancel.is_set():
+                    speak(self._timeout_responses.fault(self._last_command))
             finally:
                 for t in timers:
                     t.cancel()
                 executor.shutdown(wait=False)
+                self._active_run = None
+                with self._active_task_lock:
+                    if self._active_task == normalized_command:
+                        self._active_task = ""
 
         threading.Thread(target=_wait, daemon=True).start()
 
@@ -459,16 +755,17 @@ class JarvisBrain:
         user_message: str,
         speak: Callable[[str], None],
         complexity: str = "simple",
+        cancel: threading.Event | None = None,
     ) -> str:
+        if cancel is not None and cancel.is_set():
+            return ""
         if self._uses_nvidia():
             return self._execute_think_nvidia(user_message, speak, complexity)
 
         prompt = self._build_prompt(user_message, complexity)
         send_opts = self._send_options(user_message, complexity)
-        run = (
-            self._agent.send(prompt, options=send_opts)
-            if send_opts
-            else self._agent.send(prompt)
+        run = self._send_with_active_run_recovery(
+            prompt, send_opts, speak=speak,
         )
 
         preview = ""
@@ -479,6 +776,8 @@ class JarvisBrain:
         if use_preview:
             try:
                 for chunk in run.iter_text():
+                    if cancel is not None and cancel.is_set():
+                        return ""
                     accumulated += chunk
                     if not preview_spoken and len(accumulated) >= 12:
                         candidate = JarvisNarrator.first_sentence(accumulated)
@@ -489,9 +788,15 @@ class JarvisBrain:
             except Exception:
                 pass
 
+        if cancel is not None and cancel.is_set():
+            return ""
+
         result = run.wait()
+        self._active_run = None
+        if cancel is not None and cancel.is_set():
+            return ""
         if result.status == "error":
-            err = "A fault occurred — shall I try again?"
+            err = self._timeout_responses.fault(user_message)
             speak(err)
             return err
 
@@ -543,7 +848,7 @@ class JarvisBrain:
         return "Very good."
 
     def think(self, user_message: str) -> str:
-        self.ensure_started()
+        self.ensure_started(timeout=self.start_timeout_sec)
         if self._agent is None and self._nvidia_provider is None:
             raise RuntimeError("Brain not started.")
         timeout, level = self._resolve_timeout(user_message)
@@ -556,7 +861,7 @@ class JarvisBrain:
                 return result
             except FuturesTimeout:
                 executor.shutdown(wait=False, cancel_futures=True)
-                return "Still working on that directive — check back shortly, sir."
+                return self._timeout_fail_message(user_message)
         finally:
             pass
 
@@ -606,7 +911,20 @@ class JarvisBrain:
             "Understand Turkish input if present. Never reply in Turkish."
         )
 
+    def apply_personality_overlay(self, overlay: str) -> None:
+        self._personality_overlay = (overlay or "").strip()
+
+    def refresh_timeout_voice(self) -> None:
+        """Sync timeout phrasing with current user_name / formality."""
+        self._timeout_responses = TimeoutResponses(
+            user_name=self.user_name or "Taha",
+            use_name=not self.formal_address,
+        )
+
     def _persona_reminder(self) -> str:
+        overlay = getattr(self, "_personality_overlay", "") or ""
+        if overlay:
+            return f"[PERSONALITY]\n{overlay}\n\n"
         if self.reply_language == "tr":
             return (
                 "[KARAKTERDE KAL: J.A.R.V.I.S. — sakin, kibar butler, hafif esprili. "
@@ -636,6 +954,8 @@ class JarvisBrain:
     def _wrap_user_message(self, message: str, complexity: str = "simple") -> str:
         label = self.user_name or "user"
         base = f"[VOICE — {label}]\n"
+        selected_mode = select_mode(message)
+        base += f"{mode_hint(selected_mode)}\n"
         context = self.memory.format_context(self.address)
         if context:
             base += f"{context}\n\n"

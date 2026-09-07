@@ -13,6 +13,17 @@ ACTION_WORDS = (
     "yap", "git ", "create", "delete", "remove", "move", "copy",
     "play", "youtube", "spotify", "chrome", "safari", "terminal",
 )
+
+
+def _contains_intent_word(text: str, term: str) -> bool:
+    """Match action markers as words, not as Turkish word fragments."""
+    value = (text or "").lower()
+    marker = (term or "").lower()
+    if not marker:
+        return False
+    if marker.endswith(" "):
+        return marker in value
+    return re.search(rf"(?<!\w){re.escape(marker)}(?!\w)", value) is not None
 CODE_WORDS = (
     "code", "function", "bug", "fix", "refactor", "implement", "class",
     "python", "javascript", "typescript", "debug", "compile", "syntax",
@@ -73,7 +84,7 @@ class ModelRouter:
 
     def classify(self, text: str) -> str:
         lower = text.lower()
-        if any(w in lower for w in ACTION_WORDS):
+        if any(_contains_intent_word(lower, w) for w in ACTION_WORDS):
             return "action"
         if any(w in lower for w in CODE_WORDS):
             return "code"

@@ -187,9 +187,8 @@ class StdioMCPClient:
         with self._lock:
             self._connected = False
             proc = self._proc
-            proc_pid = self._proc_pid
+            proc_pid = getattr(proc, "pid", None) if proc is not None else None
             self._proc = None
-            self._proc_pid = None
             if proc is None:
                 return
 

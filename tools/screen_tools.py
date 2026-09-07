@@ -124,7 +124,7 @@ class ScreenDescribeTool(BaseTool):
             excerpt = " ".join(ocr.split())
             if len(excerpt) > 320:
                 excerpt = excerpt[:317] + "…"
-            return ToolResult(ok=True, data=f"{see_line} On-screen text: {excerpt}")
+            return ToolResult(ok=True, data=f"{see_line} OCR on-screen text: {excerpt}")
 
         note = status.get("note") or ""
         extra = f" ({note})" if note and "tesseract" in note.lower() and "not" in note.lower() else ""

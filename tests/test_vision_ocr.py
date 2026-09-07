@@ -69,7 +69,7 @@ class VisionOcrTests(unittest.TestCase):
             result = ScreenDescribeTool().run({})
         self.assertTrue(result.ok)
         self.assertIn("Cursor", str(result.data))
-        self.assertIn("görebiliyorum", str(result.data).lower())
+        self.assertIn("can see", str(result.data).lower())
 
 
 if __name__ == "__main__":

@@ -20,6 +20,13 @@ SPEECH_APP_ALIASES = {
     "termınal": "terminal",
     "terminal": "terminal",
     "kursor": "cursor",
+    "purser": "cursor",
+    "crusoe": "cursor",
+    "cursur": "cursor",
+    "cursorr": "cursor",
+    "jours": "cursor",
+    "jors": "cursor",
+    "cursor": "cursor",
     "safariyi": "safari",
     "chromeyi": "chrome",
     "chrome'u": "chrome",
@@ -54,6 +61,10 @@ SPEECH_APP_ALIASES = {
     "code": "vscode",
     "vscode": "vscode",
     "v s code": "vscode",
+    "github": "github",
+    "git hub": "github",
+    "githuub": "github",
+    "githab": "github",
 }
 
 # Sites opened via URL (not macOS app bundle).
@@ -65,6 +76,9 @@ SITE_OPEN_URLS: dict[str, str] = {
     "outlook": "https://outlook.live.com",
     "outlook web": "https://outlook.live.com",
     "hotmail": "https://outlook.live.com",
+    "github": "https://github.com",
+    "twitter": "https://x.com",
+    "x": "https://x.com",
 }
 
 _CONVERSATIONAL_PREFIX = re.compile(
@@ -218,6 +232,17 @@ def extract_site_url(text: str) -> Optional[str]:
         has_open or "mail" in lower or "yaz" in lower
     ):
         return SITE_OPEN_URLS["outlook"]
+
+    # GitHub account/profile — always a website, never a macOS app.
+    github_key = normalize_open_target(raw).lower()
+    if (
+        github_key == "github"
+        or any(term in lower for term in ("github", "git hub", "githuub", "githab"))
+    ) and (
+        has_open
+        or any(term in lower for term in ("hesap", "account", "profile", "profil"))
+    ):
+        return SITE_OPEN_URLS["github"]
 
     # "youtube" / "youtube aç" / "youtube'dan video aç" / bare yt
     if youtube_hit:

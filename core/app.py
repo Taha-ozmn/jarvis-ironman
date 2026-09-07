@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -17,6 +19,7 @@ from core.agent_profiles import (
 )
 from core.backup import BackupService
 from core.brain_router import BrainPath, BrainRouter
+from core.coding_agent import CodingAgent
 from core.command_router import CommandRouter
 from core.context_manager import ContextManager, SessionContext
 from core.cost_meter import CostMeter
@@ -28,8 +31,12 @@ from core.diagnostics import SelfDiagnostics
 from core.event_bus import EventBus
 from core.execution_engine import ExecutionEngine, ExecutionRequest
 from core.jarvis_state import JarvisState
+from core.persona_engine import apply_personality_to_brain
+from core.plan_checkpoint import PlanCheckpointStore
 from core.planner import Planner, make_llm_refine
+from core.self_improvement import SelfImprovementEngine
 from core.task_manager import TaskManager
+from core.thinking_trace import ThinkingPhase, ThinkingTrace
 from core.verification import claim_safe_speech
 from integrations.mcp_adapter import MCPAdapter
 from memory.database import Database
@@ -39,6 +46,7 @@ from memory.repository import MemoryRepository
 from projects.registry import ProjectRegistry
 from proactive.briefing import BriefingGenerator
 from proactive.notifier import NotificationPolicy, ProactiveNotifier
+from proactive.suggestions import SuggestionEngine
 from security.audit import AuditLog
 from security.confirmation import ConfirmationGate
 from security.permissions import PermissionGate, PermissionLevel
@@ -50,6 +58,17 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 SpeakFn = Callable[[str], None]
+
+
+@dataclass
+class TurnResult:
+    """Unified orchestrator result for one user turn."""
+
+    speech: Optional[str] = None
+    handled: bool = False
+    brain_needed: bool = False
+    brain_path: str = ""
+    request_id: str = ""
 
 
 class JarvisOS:
@@ -116,6 +135,18 @@ class JarvisOS:
             language=jarvis_cfg.get("language", "en-GB"),
         )
         self.notifier = ProactiveNotifier(NotificationPolicy.from_config(proactive_cfg))
+        self.suggestions = SuggestionEngine(
+            self.tasks,
+            self.briefing,
+            user_name=jarvis_cfg.get("user_name", ""),
+            language=jarvis_cfg.get("language", "en-GB"),
+        )
+        checkpoint_rel = str(j2.get("checkpoint_path", "data/plan_checkpoint.json"))
+        self.checkpoints = PlanCheckpointStore(
+            self.context,
+            path=self.root / checkpoint_rel,
+        )
+        self.self_improvement = SelfImprovementEngine(self.root)
 
         auto_enabled = bool(j2.get("automation", True))
         self.automation = AutomationEngine(
@@ -186,6 +217,9 @@ class JarvisOS:
             working_dir=self.projects.working_dir,
             backup=self.backup,
             plan_runner=self._run_plan_goal,
+            plan_resume_runner=self.resume_checkpoint,
+            suggestions_runner=self.proactive_suggestion,
+            improvement_engine=self.self_improvement,
             llm=self.llm,
             jarvis2_config=j2,
             jarvis_language=str(jarvis_cfg.get("language", "en-GB")),
@@ -227,7 +261,10 @@ class JarvisOS:
             working_dir=self.projects.working_dir,
             tasks=self.tasks,
             dry_run=self.dry_run,
+            workspace_only=bool(j2.get("workspace_only", False)),
         )
+        self.coding_agent = CodingAgent(self, planner=self.planner)
+        self.execution.set_checkpoint_handler(self._on_plan_checkpoint)
         self.router = CommandRouter()
         # FastBrain vs DeepBrain classifier (guides latency path; does not replace Cursor)
         self.brain_router = BrainRouter(self.router)
@@ -249,11 +286,17 @@ class JarvisOS:
         self.recall_limit = int(j2.get("memory_recall_limit", 3))
         self.recall_max_chars = int(j2.get("memory_recall_max_chars", 300))
         self.proactive_enabled = bool(proactive_cfg.get("enabled", True))
+        self.thinking = ThinkingTrace(
+            enabled=bool(j2.get("thinking_trace", True)),
+        )
+        self._thinking_callback: Optional[Callable[[dict[str, Any]], None]] = None
         self._ready = True
         self.screen_watcher = None
         self.light_mode = None
         self._diag_cache: dict[str, Any] = {"ts": 0.0, "payload": None}
         self._health_history: deque = deque(maxlen=10)
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: Optional[threading.Thread] = None
         self._wire_screen_and_light(j2)
         self.bus.publish(
             "os.ready",
@@ -327,6 +370,20 @@ class JarvisOS:
         # Build result
         result = dict(diag)  # copy
         result["ok"] = overall_ok
+        brain = getattr(self, "_brain", None)
+        result["brain"] = {
+            "bound": brain is not None,
+            "ready": bool(getattr(brain, "is_ready", lambda: False)()),
+            "degraded": bool(getattr(brain, "degraded", False)),
+            "error": str(getattr(brain, "start_error", "") or "")[:160],
+        }
+        result["checkpoint"] = {
+            "available": self.checkpoints.has_checkpoint(),
+            "summary": self.checkpoints.summary(),
+        }
+        result["autonomy_profile"] = str(
+            (self.config.get("jarvis2") or {}).get("autonomy_profile", "safe")
+        )
         result["subsystems"] = subsystems
         # Add to health history for trend tracking
         self._health_history.append({
@@ -462,9 +519,57 @@ class JarvisOS:
             except Exception as e:
                 logger.debug("Failed to update brain with name preference: %s", type(e).__name__)
 
+    def _on_plan_checkpoint(self, plan: Any, resume_from: int, reason: str) -> None:
+        if reason == "__completed__":
+            self.checkpoints.clear()
+            return
+        try:
+            self.checkpoints.save(plan, resume_from, reason)
+        except Exception as e:
+            logger.warning("Failed to save plan checkpoint: %s", type(e).__name__)
+
+    def resume_checkpoint(self) -> str:
+        """Resume the last paused/failed plan from session checkpoint."""
+        loaded = self.checkpoints.load()
+        if loaded is None:
+            paused = self.execution.resume_paused_plan()
+            if paused is None:
+                return "Nothing to resume — no paused plan on file."
+            if paused.ok:
+                self.checkpoints.clear()
+            return paused.speech or "Plan resumed and completed."
+        plan, idx, _meta = loaded
+        self.thinking.emit(ThinkingPhase.PLANNING, f"Resuming step {idx + 1}")
+        if plan.task_id is not None:
+            try:
+                self.tasks.update(plan.task_id, status="in_progress")
+            except Exception:
+                logger.warning("Could not reactivate checkpoint task")
+        result = self.execution.execute_plan(plan, start_at=idx, persist_task=False)
+        if result.ok:
+            self.checkpoints.clear()
+            return result.speech or "Plan complete."
+        if result.resume_from is not None:
+            self.checkpoints.save(plan, result.resume_from, result.stopped_reason or "")
+        return result.speech or "Resume stopped — say «continue» to try again."
+
+    def proactive_suggestion(self, *, last_command: str = "") -> str:
+        """Short contextual suggestion for boot or on-demand."""
+        snap = self.context.snapshot()
+        suggestion = self.suggestions.generate(
+            last_command=last_command or str(snap.get("last_command") or ""),
+            has_checkpoint=self.checkpoints.has_checkpoint(),
+            checkpoint_summary=self.checkpoints.summary(),
+        )
+        return suggestion.voice
+
     def bind_brain(self, brain: Any) -> None:
         """Optional Cursor brain for LLM-assisted planning/patch (offline-safe if missing)."""
         self._brain = brain
+        try:
+            apply_personality_to_brain(brain, self.personality)
+        except Exception as e:
+            logger.debug("Persona apply failed: %s", type(e).__name__)
         try:
             self.llm.bind_brain(brain)
             self.planner.set_llm_refine(make_llm_refine(self.llm))
@@ -491,6 +596,26 @@ class JarvisOS:
                 self.light_mode.start()
         except Exception as e:
             logger.warning("Failed to start light-mode controller: %s", type(e).__name__)
+        if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
+            self._watchdog_stop.clear()
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog_loop,
+                daemon=True,
+                name="jarvis-health-watchdog",
+            )
+            self._watchdog_thread.start()
+
+    def _watchdog_loop(self) -> None:
+        """Renew a degraded brain without interrupting local tools."""
+        while not self._watchdog_stop.wait(60.0):
+            brain = getattr(self, "_brain", None)
+            if brain is None or not bool(getattr(brain, "degraded", False)):
+                continue
+            try:
+                logger.info("Watchdog reconnecting degraded neural core")
+                brain.reconnect()
+            except Exception:
+                logger.exception("Watchdog brain reconnect failed")
 
     def classify_brain(self, command: str) -> BrainPath:
         """Public Fast vs Deep hint for observability / callers."""
@@ -530,6 +655,65 @@ class JarvisOS:
             active_topic=str(extras.get("active_topic") or ""),
             recent_user_turns=recent,
             screen_summary=screen,
+        )
+
+    def set_thinking_callback(
+        self,
+        callback: Optional[Callable[[dict[str, Any]], None]],
+    ) -> None:
+        """Wire HUD / console updates for internal reasoning trace."""
+        self._thinking_callback = callback
+        self.thinking.set_callback(callback)
+
+    def handle_turn(self, command: str) -> TurnResult:
+        """Single orchestrator entry — FastBrain tools or DeepBrain fallback."""
+        import uuid
+
+        from core.request_context import get_request_id, set_request_id
+
+        cmd = (command or "").strip()
+        if not cmd:
+            return TurnResult(speech="I didn't catch that.", handled=True)
+
+        rid = get_request_id() or uuid.uuid4().hex[:12]
+        if not get_request_id():
+            set_request_id(rid)
+
+        self.thinking.emit(
+            ThinkingPhase.UNDERSTANDING,
+            cmd[:96] + ("…" if len(cmd) > 96 else ""),
+        )
+        self.thinking.emit(ThinkingPhase.DECIDING, "Choosing the best path")
+
+        try:
+            speech = self.try_handle_command(cmd)
+        except Exception as err:
+            logger.exception("handle_turn failed")
+            self.thinking.emit(ThinkingPhase.RESPONDING, "Recovering from fault")
+            return TurnResult(
+                speech=f"Something went wrong: {err}",
+                handled=True,
+                brain_path="error",
+                request_id=rid,
+            )
+
+        path = self._last_brain_path or "fast"
+        if speech is not None:
+            self.thinking.emit(ThinkingPhase.RESPONDING, "Ready to speak")
+            self.ingest_conversation(cmd, speech)
+            return TurnResult(
+                speech=speech,
+                handled=True,
+                brain_path=path,
+                request_id=rid,
+            )
+
+        self.thinking.emit(ThinkingPhase.PLANNING, "Engaging neural core")
+        return TurnResult(
+            handled=False,
+            brain_needed=True,
+            brain_path="deep",
+            request_id=rid,
         )
 
     def try_handle_command(self, command: str) -> Optional[str]:
@@ -579,6 +763,7 @@ class JarvisOS:
             args = dict(match.request.arguments)
             if tool == "media.play" and judgment.tool_overrides:
                 args.update(judgment.tool_overrides)
+            self.thinking.emit(ThinkingPhase.EXECUTING, f"{tool}")
             print(f"🔧 FastBrain: {tool} {args} ({decision.reason})")
             logger.info("fast brain tool: %s %s (%s)", tool, args, decision.reason)
             if tool == "plan.run":
@@ -588,10 +773,12 @@ class JarvisOS:
                 if judgment.speak_preamble:
                     speech = f"{judgment.speak_preamble} {speech}".strip()
                 self.context.record_turn(resolved, speech)
+                self._remember_with_bound_brain(resolved, speech)
                 print(f"✅ Plan sonucu: {speech[:120]}")
                 return speech
             result = self.execution.execute(ExecutionRequest(tool, args))
             if result.ok:
+                self.thinking.emit(ThinkingPhase.VERIFYING, tool)
                 speech = claim_safe_speech(result)
                 if judgment.speak_preamble and judgment.autonomous:
                     # Avoid double-speaking rationale if tool already included it
@@ -618,10 +805,29 @@ class JarvisOS:
                 )
                 print(f"❌ Araç hata: {tool} → {speech[:120]}")
             self.context.record_turn(resolved, speech)
+            self._remember_with_bound_brain(resolved, speech)
             return speech
         except Exception as err:
             logger.exception("try_handle_command failed")
+            try:
+                self.self_improvement.propose(
+                    f"Recover command route: {command[:80]}",
+                    str(err),
+                    scope="bug_fix",
+                )
+            except Exception:
+                logger.exception("Failed to create improvement proposal")
             return f"Something went wrong: {err}"
+
+    def _remember_with_bound_brain(self, command: str, response: str) -> None:
+        """Keep FastBrain turns available to the following DeepBrain turn."""
+        brain = getattr(self, "_brain", None)
+        remember = getattr(brain, "remember_turn", None)
+        if callable(remember) and response:
+            try:
+                remember(command, response)
+            except Exception:
+                logger.debug("Could not sync fast turn to bound brain")
 
     def run_research_agent(self, query: str, *, background: bool = True) -> str:
         """Allowlisted research plan — short ack when background."""
@@ -680,10 +886,16 @@ class JarvisOS:
         q = (query or "").strip()
         if not q:
             return ""
+        active_project = str(
+            self.context.get_extra("active_project_key")
+            or self.context.get_extra("active_project_name")
+            or ""
+        ).strip()
+        retrieval_query = f"{q} {active_project}".strip() if active_project else q
         skip_semantic = bool(self.light_mode and self.light_mode.active)
         try:
             block = self.memory_layers.retrieve_for_prompt(
-                q,
+                retrieval_query,
                 profile_limit=4,
                 episodic_limit=2,
                 semantic_limit=self.recall_limit,
@@ -906,6 +1118,7 @@ class JarvisOS:
         self.audit.write(action=action, level=level, success=success, details=details)
 
     def close(self) -> None:
+        self._watchdog_stop.set()
         try:
             if self.light_mode is not None:
                 self.light_mode.stop()

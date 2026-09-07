@@ -152,23 +152,52 @@ class OpenAppTool(BaseTool):
             if msg:
                 return ToolResult(ok=True, data=msg)
             else:
-                # Provide helpful error message in Turkish/English
-                error_msg = f"Uygulama açılamadı: «{name}\". "
-                error_msg += "Uygulama adını kontrol edin veya farklı bir deneyin. "
-                error_msg += f"Could not open application: «{name}\". "
-                error_msg += "Please check the app name and try again."
+                suggestions = self._c._app_catalog.suggest(name, limit=3)
+                hint = (
+                    f" Suggestions: {', '.join(suggestions)}."
+                    if suggestions else ""
+                )
+                error_msg = (
+                    f"I couldn't open «{name}». "
+                    f"Please check the application name.{hint}"
+                )
                 return ToolResult(ok=False, error=error_msg)
         except Exception as e:
-            # Log the actual error for developers but show user-friendly message
             import traceback
             print(f"OpenAppTool error for '{name}': {e}")
             traceback.print_exc()
 
-            error_msg = f"Uygulama açılamadı: «{name}\". "
-            error_msg += "Uygulama adını kontrol edin veya farklı bir deneyin. "
-            error_msg += f"Could not open application: «{name}\". "
-            error_msg += "Please check the app name and try again."
+            suggestions = self._c._app_catalog.suggest(name, limit=3)
+            hint = f" Suggestions: {', '.join(suggestions)}." if suggestions else ""
+            error_msg = f"I couldn't open «{name}». Please check the application name.{hint}"
             return ToolResult(ok=False, error=error_msg)
+
+
+class OpenCursorWorkspaceTool(BaseTool):
+    name = "cursor.open_workspace"
+    description = "Open a local folder in Cursor, optionally as a new Git repository"
+    permission_level = PermissionLevel.LOCAL
+    input_schema = {
+        "path": {"type": "str", "required": False},
+        "initialize_git": {"type": "bool", "required": False},
+    }
+
+    def __init__(self, controller: Any) -> None:
+        self._c = controller
+
+    def run(self, arguments: dict[str, Any]) -> ToolResult:
+        path = str(arguments.get("path") or "").strip()
+        initialize_git = bool(arguments.get("initialize_git", False))
+        try:
+            result = self._c.open_cursor_workspace(
+                path,
+                initialize_git=initialize_git,
+            )
+        except Exception as err:
+            return ToolResult(ok=False, error=f"Cursor workspace open failed: {err}")
+        if result.startswith("Opened "):
+            return ToolResult(ok=True, data=result)
+        return ToolResult(ok=False, error=result)
 
 
 class CloseAppTool(BaseTool):

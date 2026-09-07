@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from memory.repository import Memory, MemoryRepository
+from memory.retrieval import (
+    CATEGORY_PROCEDURAL,
+    HybridRetriever,
+    parse_temporal_window,
+)
 
 # Canonical category names used in retrieval / tools
 CATEGORY_PROFILE = "profile"
@@ -79,6 +84,7 @@ class MemoryLayers:
 
     def __init__(self, repo: MemoryRepository) -> None:
         self.repo = repo
+        self._retriever = HybridRetriever(repo)
 
     # --- Profile ---
 
@@ -152,6 +158,55 @@ class MemoryLayers:
 
     def recent_episodic(self, *, limit: int = 5) -> list[Memory]:
         return self.repo.search("", category=CATEGORY_EPISODIC, limit=limit)
+
+    # --- Procedural ---
+
+    def record_procedural(
+        self,
+        content: str,
+        *,
+        key: Optional[str] = None,
+        importance: int = 4,
+    ) -> Optional[Memory]:
+        """Store how-to knowledge (test commands, workflows, project habits)."""
+        text = (content or "").strip()
+        if not text or len(text) < 8:
+            return None
+        if key:
+            return self.repo.upsert_by_key(
+                key,
+                text[:500],
+                category=CATEGORY_PROCEDURAL,
+                importance=max(1, min(5, importance)),
+            )
+        return self.repo.create(
+            text[:500],
+            category=CATEGORY_PROCEDURAL,
+            importance=max(1, min(5, importance)),
+        )
+
+    def search_procedural(self, query: str, *, limit: int = 4) -> list[Memory]:
+        return self._retriever.retrieve_procedural(query, limit=limit)
+
+    def search_temporal(self, query: str, *, limit: int = 6) -> list[Memory]:
+        return self._retriever.retrieve_temporal(query, limit=limit)
+
+    def temporal_speech(self, query: str, *, language: str = "en-GB") -> str:
+        """Answer «what did we do yesterday?» style questions."""
+        window = parse_temporal_window(query)
+        hits = self.search_temporal(query, limit=6)
+        if not hits:
+            label = window.label if window else "that period"
+            if str(language).lower().startswith("tr"):
+                return f"{label} için kayıtlı bir notum yok."
+            return f"I have no recorded notes for {label}."
+        lines = [m.content for m in hits[:4]]
+        body = "; ".join(lines)
+        if len(body) > 260:
+            body = body[:257] + "…"
+        if str(language).lower().startswith("tr"):
+            return f"Kayıtlarım: {body}"
+        return f"From my records: {body}"
 
     # --- Forget ---
 
@@ -228,30 +283,42 @@ class MemoryLayers:
 
         q = (query or "").strip()
         hits: list[Memory] = []
-        if q and not skip_semantic:
-            try:
-                for mem in self.repo.search_semantic(q, limit=semantic_limit + 2):
-                    if mem.id in seen:
-                        continue
-                    if (mem.category or "") == CATEGORY_PROFILE:
-                        continue
-                    seen.add(mem.id)
-                    hits.append(mem)
-            except Exception:
-                pass
-        if q and len(hits) < semantic_limit:
-            for mem in self.repo.search(q, limit=semantic_limit + 2):
+        temporal = parse_temporal_window(q) if q else None
+        try:
+            hybrid = self._retriever.retrieve(
+                q,
+                limit=semantic_limit + episodic_limit + 2,
+                temporal=temporal,
+                skip_semantic=skip_semantic,
+            )
+            for mem in hybrid:
+                if mem.id in seen:
+                    continue
+                if (mem.category or "") == CATEGORY_PROFILE:
+                    continue
+                seen.add(mem.id)
+                hits.append(mem)
+        except Exception:
+            pass
+
+        # Procedural hints for coding / workflow queries
+        if q and any(
+            tok in q.lower()
+            for tok in ("test", "build", "deploy", "npm", "pytest", "çalıştır", "calistir")
+        ):
+            for mem in self.search_procedural(q, limit=2):
                 if mem.id in seen:
                     continue
                 seen.add(mem.id)
                 hits.append(mem)
 
-        # Always sprinkle recent episodic (recency)
-        for mem in self.recent_episodic(limit=episodic_limit):
-            if mem.id in seen:
-                continue
-            seen.add(mem.id)
-            hits.append(mem)
+        # Always sprinkle recent episodic (recency) when not temporal-only
+        if temporal is None:
+            for mem in self.recent_episodic(limit=episodic_limit):
+                if mem.id in seen:
+                    continue
+                seen.add(mem.id)
+                hits.append(mem)
 
         # Prefer preference/fact/project/episodic ordering
         def _rank(m: Memory) -> tuple[int, int]:
@@ -303,4 +370,5 @@ def normalize_memory_category(raw: str) -> str:
         CATEGORY_EPISODIC,
         CATEGORY_FACT,
         CATEGORY_PROJECT,
+        CATEGORY_PROCEDURAL,
     } else CATEGORY_FACT)

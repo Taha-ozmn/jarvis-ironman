@@ -29,6 +29,26 @@ class SystemBackupTool(BaseTool):
         )
 
 
+class PlanResumeTool(BaseTool):
+    """Resume a paused or checkpointed multi-step plan."""
+
+    name = "plan.resume"
+    description = "Resume the last paused or failed plan from checkpoint"
+    permission_level = PermissionLevel.LOCAL
+    input_schema: dict = {}
+
+    def __init__(self, runner: Any) -> None:
+        self._runner = runner
+
+    def run(self, arguments: dict[str, Any]) -> ToolResult:
+        del arguments
+        try:
+            speech = self._runner()
+        except Exception as err:
+            return ToolResult(ok=False, error=str(err))
+        return ToolResult(ok=True, data=speech)
+
+
 class PlanRunTool(BaseTool):
     """Delegates to JarvisOS / ExecutionEngine via injected runner."""
 

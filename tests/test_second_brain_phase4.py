@@ -60,7 +60,7 @@ class SessionCaptureRouteTests(unittest.TestCase):
         try:
             reply = os_core.try_handle_command("bu konuşmayı hatırlama")
             self.assertIsNotNone(reply)
-            self.assertIn("kaydetmeyeceğim", (reply or "").lower())
+            self.assertIn("won't save", (reply or "").lower())
             self.assertFalse(os_core.state.memory_capture)
             ids = os_core.ingest_conversation(
                 "Benim favori rengim mavi ve bunu asla unutma lütfen",
